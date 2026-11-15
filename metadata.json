@@ -1,0 +1,8 @@
+{
+  "name": "Remix TelaBox — teste apk",
+  "description": "Aplicativo para TV Box que carrega servidores e sites de vídeo completos e organiza os conteúdos em uma interface otimizada para controle remoto.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
