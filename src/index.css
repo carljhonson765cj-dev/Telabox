@@ -1,0 +1,50 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-display: "Outfit", system-ui, sans-serif;
+  --font-sans: "Plus Jakarta Sans", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+@layer base {
+  html, body {
+    font-family: var(--font-sans);
+    background-color: #090A0F;
+    color: #F1F5F9;
+    overflow-x: hidden;
+  }
+
+  h1, h2, h3, h4 {
+    font-family: var(--font-display);
+  }
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* 10-foot TV Box Remote Focus Ring */
+[data-tv-focusable="true"] {
+  transition: transform 160ms cubic-bezier(0.16, 1, 0.3, 1),
+              box-shadow 160ms cubic-bezier(0.16, 1, 0.3, 1),
+              border-color 160ms cubic-bezier(0.16, 1, 0.3, 1),
+              background-color 160ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+[data-tv-focusable="true"]:focus,
+[data-tv-focusable="true"].tv-focused {
+  outline: none;
+  box-shadow: 0 0 0 3px #FFFFFF, 0 0 28px rgba(56, 189, 248, 0.45);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-tv-focusable="true"] {
+    transition: none;
+  }
+}
+
