@@ -1,14 +1,22 @@
 import express from 'express';
+import { createServer as createHttpServer } from 'node:http';
 import { createServer as createViteServer } from 'vite';
 import path from 'node:path';
 import { Readable } from 'node:stream';
-import { browseServerPage, crawlServer, fetchLatestServerUpdates, normalizeTargetUrl, searchServerContent } from './server/crawler.ts';
+import {
+  browseServerPagesBatch,
+  crawlServer,
+  fetchLatestServerUpdates,
+  normalizeTargetUrl,
+  searchServerContent,
+} from './server/crawler.ts';
 import { createDemoServerRouter } from './server/demoServer.ts';
 import {
   BROWSER_USER_AGENT,
   DEFAULT_PORTAL_COOKIES,
   resolveVideoPageStream,
 } from './server/resolver.ts';
+import { registerBrowserProxyRoutes } from './server/browserProxy.ts';
 
 const PORT = 3000;
 
@@ -23,8 +31,8 @@ async function startServer() {
   app.get('/api/scan/stream', async (req, res) => {
     const rawUrl = String(req.query.url || '');
     const mode = req.query.mode === 'quick' ? 'quick' : 'full';
-    const maxPages = Math.min(Math.max(Number(req.query.maxPages) || (mode === 'quick' ? 1 : 25), 1), 120);
-    const maxDepth = Math.min(Math.max(Number(req.query.maxDepth) || (mode === 'quick' ? 0 : 2), 0), 5);
+    const maxPages = Math.min(Math.max(Number(req.query.maxPages) || (mode === 'quick' ? 1 : 5), 1), 5);
+    const maxDepth = Math.min(Math.max(Number(req.query.maxDepth) || (mode === 'quick' ? 0 : 1), 0), 3);
 
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -73,13 +81,13 @@ async function startServer() {
   // Standard JSON scan fallback
   app.post('/api/scan', async (req, res) => {
     try {
-      const { url, mode = 'full', maxPages = 25, maxDepth = 2 } = req.body || {};
+      const { url, mode = 'full', maxPages = 5, maxDepth = 1 } = req.body || {};
       const localBaseUrl = `http://127.0.0.1:${PORT}`;
       const profile = await crawlServer({
         url: String(url || ''),
         mode: mode === 'quick' ? 'quick' : 'full',
-        maxPages: Math.min(Math.max(Number(maxPages) || 25, 1), 120),
-        maxDepth: Math.min(Math.max(Number(maxDepth) || 2, 0), 5),
+        maxPages: Math.min(Math.max(Number(maxPages) || 5, 1), 5),
+        maxDepth: Math.min(Math.max(Number(maxDepth) || 1, 0), 3),
         localBaseUrl,
       });
       res.json(profile);
@@ -89,15 +97,19 @@ async function startServer() {
     }
   });
 
-  // On-demand remote server search endpoint (supports page=1,2,3... pagination)
+  // On-demand remote server search endpoint (batches of 3-5 pages starting at page=1,4,7...)
   app.get('/api/search', async (req, res) => {
     const serverUrl = String(req.query.serverUrl || '');
     const query = String(req.query.query || '').trim();
     const page = Math.max(1, Number(req.query.page) || 1);
+    const pages = Math.min(Math.max(Number(req.query.pages) || 3, 1), 5);
     if (!serverUrl || !query) {
       res.status(400).json({ error: 'Informe o servidor e o termo de pesquisa.' });
       return;
     }
+
+    const abortController = new AbortController();
+    req.on('close', () => abortController.abort());
 
     try {
       const localBaseUrl = `http://127.0.0.1:${PORT}`;
@@ -105,7 +117,9 @@ async function startServer() {
         serverUrl,
         query,
         page,
+        pages,
         localBaseUrl,
+        signal: abortController.signal,
       });
       res.json(result);
     } catch (err) {
@@ -114,9 +128,10 @@ async function startServer() {
     }
   });
 
-  // Live pagination / category browsing directly from the target website
+  // Live on-demand batch pagination (fetches 3-5 pages sequentially with rate-limit delay)
   app.get('/api/browse', async (req, res) => {
     const rawPageUrl = String(req.query.url || '');
+    const pages = Math.min(Math.max(Number(req.query.pages) || 4, 1), 5);
     const categoryName = typeof req.query.category === 'string' && req.query.category.trim()
       ? req.query.category.trim()
       : undefined;
@@ -125,13 +140,18 @@ async function startServer() {
       return;
     }
 
+    const abortController = new AbortController();
+    req.on('close', () => abortController.abort());
+
     try {
       const localBaseUrl = `http://127.0.0.1:${PORT}`;
       const pageUrl = normalizeTargetUrl(rawPageUrl, localBaseUrl);
-      const result = await browseServerPage({
+      const result = await browseServerPagesBatch({
         pageUrl,
+        pages,
         categoryName,
         localBaseUrl,
+        signal: abortController.signal,
       });
       res.json(result);
     } catch (err) {
@@ -187,7 +207,9 @@ async function startServer() {
   // Media, HLS playlist, subtitle (.srt -> .vtt), and thumbnail proxy with Range + Referer support
   app.get('/api/proxy', async (req, res) => {
     const rawTarget = String(req.query.url || '');
+    const rawSubpath = typeof req.query.subpath === 'string' ? req.query.subpath : '';
     const rawReferer = typeof req.query.referer === 'string' ? req.query.referer : '';
+    const rawUserAgent = typeof req.query.ua === 'string' && req.query.ua.trim() ? req.query.ua.trim() : '';
     if (!rawTarget) {
       res.status(400).send('Parâmetro url ausente.');
       return;
@@ -195,7 +217,8 @@ async function startServer() {
 
     try {
       const localBaseUrl = `http://127.0.0.1:${PORT}`;
-      const targetUrl = normalizeTargetUrl(rawTarget, localBaseUrl);
+      const baseTargetUrl = normalizeTargetUrl(rawTarget, localBaseUrl);
+      const targetUrl = rawSubpath ? new URL(rawSubpath, baseTargetUrl).toString() : baseTargetUrl;
       const parsed = new URL(targetUrl);
 
       if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
@@ -219,7 +242,7 @@ async function startServer() {
       const sameRootPortal = targetRootDomain === refererRootDomain;
 
       const headers: Record<string, string> = {
-        'User-Agent': BROWSER_USER_AGENT,
+        'User-Agent': rawUserAgent || BROWSER_USER_AGENT,
         'Accept': '*/*',
         'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8',
         'Referer': refererUrl,
@@ -276,6 +299,8 @@ async function startServer() {
       ) {
         const playlistText = await upstream.text();
         const refParam = rawReferer ? `&referer=${encodeURIComponent(rawReferer)}` : '';
+        const uaParam = rawUserAgent ? `&ua=${encodeURIComponent(rawUserAgent)}` : '';
+        const proxyExtraParams = `${refParam}${uaParam}`;
         const rewritten = playlistText
           .split(/\r?\n/)
           .map((line) => {
@@ -285,7 +310,7 @@ async function startServer() {
               return line.replace(/URI=(["'])([^"']+)\1/gi, (_, quote, uri) => {
                 try {
                   const abs = new URL(uri, finalUpstreamUrl).toString();
-                  return `URI=${quote}/api/proxy?url=${encodeURIComponent(abs)}${refParam}${quote}`;
+                  return `URI=${quote}/api/proxy?url=${encodeURIComponent(abs)}${proxyExtraParams}${quote}`;
                 } catch {
                   return `URI=${quote}${uri}${quote}`;
                 }
@@ -293,7 +318,7 @@ async function startServer() {
             }
             try {
               const abs = new URL(trimmed, finalUpstreamUrl).toString();
-              return `/api/proxy?url=${encodeURIComponent(abs)}${refParam}`;
+              return `/api/proxy?url=${encodeURIComponent(abs)}${proxyExtraParams}`;
             } catch {
               return line;
             }
@@ -312,6 +337,52 @@ async function startServer() {
           );
         }
         res.send(rewritten);
+        return;
+      }
+
+      // Rewrite relative <BaseURL> or segment paths inside MPEG-DASH (.mpd) manifests
+      if (lowerUrl.includes('.mpd') || contentType.includes('dash+xml')) {
+        const mpdText = await upstream.text();
+        const refParam = rawReferer ? `&referer=${encodeURIComponent(rawReferer)}` : '';
+        const uaParam = rawUserAgent ? `&ua=${encodeURIComponent(rawUserAgent)}` : '';
+        const proxyExtraParams = `${refParam}${uaParam}`;
+        const baseDir = new URL('.', finalUpstreamUrl).toString();
+        let rewrittenMpd = mpdText
+          .replace(/<BaseURL>([^<]+)<\/BaseURL>/gi, (_, rawBase) => {
+            try {
+              const abs = new URL(rawBase.trim(), finalUpstreamUrl).toString();
+              return `<BaseURL>/api/proxy?url=${encodeURIComponent(abs)}${proxyExtraParams}</BaseURL>`;
+            } catch {
+              return `<BaseURL>${rawBase}</BaseURL>`;
+            }
+          })
+          .replace(/(media|initialization)=["']([^"']+)["']/gi, (full, attr, val) => {
+            if (val.startsWith('/api/proxy') || /^https?:\/\//i.test(val)) {
+              if (/^https?:\/\//i.test(val)) {
+                return `${attr}="/api/proxy?url=${encodeURIComponent(val)}${proxyExtraParams}"`;
+              }
+              return full;
+            }
+            if (val.includes('$')) {
+              return full;
+            }
+            try {
+              const abs = new URL(val, finalUpstreamUrl).toString();
+              return `${attr}="/api/proxy?url=${encodeURIComponent(abs)}${proxyExtraParams}"`;
+            } catch {
+              return full;
+            }
+          });
+        if (!/<BaseURL>/i.test(rewrittenMpd)) {
+          rewrittenMpd = rewrittenMpd.replace(
+            /(<MPD[^>]*>)/i,
+            `$1\n  <BaseURL>/api/proxy?url=${encodeURIComponent(baseDir)}${proxyExtraParams}&subpath=</BaseURL>`
+          );
+        }
+        res.status(upstream.status);
+        res.setHeader('Content-Type', 'application/dash+xml');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.send(rewrittenMpd);
         return;
       }
 
@@ -351,14 +422,22 @@ async function startServer() {
     }
   });
 
+  registerBrowserProxyRoutes(app, PORT);
+
   // Prevent any unmatched /api/* route from falling through to HTML SPA fallback
   app.use('/api', (_req, res) => {
     res.status(404).json({ error: 'Endpoint de API não encontrado.' });
   });
 
+  const httpServer = createHttpServer(app);
+
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: false,
+        ws: { server: httpServer },
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -370,7 +449,7 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`TelaBox server listening on http://0.0.0.0:${PORT}`);
   });
 }
