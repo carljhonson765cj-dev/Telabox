@@ -1,19 +1,32 @@
 import * as cheerio from 'cheerio';
 import type { QualityOption } from '../src/types/media.ts';
+import { toOfficialEmbedUrl } from '../src/utils/embedUrl.ts';
 
 export const BROWSER_USER_AGENT =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
-// Common age-gate & consent cookies used across adult & media portals
+// Common age-gate, consent & session cookies used across adult & media portals
 export const DEFAULT_PORTAL_COOKIES =
-  'accessAgeDisclaimerPH=1; accessAgeDisclaimerRT=1; platform=pc; age_verified=1; over18=1; ageGate=1; consent=yes; disclaimer=1';
+  'accessAgeDisclaimerPH=1; accessAgeDisclaimerRT=1; platform=pc; age_verified=1; over18=1; ageGate=1; xh_age_gate=1; consent=yes; cookie_consent=1; cookiesAccepted=1; disclaimer=1; avs=1; video_lang=pt';
 
-export function buildPortalHeaders(targetUrl: string, extraCookie?: string): Record<string, string> {
-  let referer = targetUrl;
-  try {
-    referer = new URL(targetUrl).origin + '/';
-  } catch {
-    // keep targetUrl
+export function getPortalRootDomain(hostname: string): string {
+  const parts = hostname.toLowerCase().split('.');
+  return parts.length >= 2 ? parts.slice(-2).join('.') : hostname.toLowerCase();
+}
+
+export function buildPortalHeaders(
+  targetUrl: string,
+  extraCookie?: string,
+  refererOverride?: string,
+  fetchSite: 'same-origin' | 'cross-site' | 'none' = 'same-origin'
+): Record<string, string> {
+  let referer = refererOverride || targetUrl;
+  if (!refererOverride) {
+    try {
+      referer = new URL(targetUrl).origin + '/';
+    } catch {
+      // keep targetUrl
+    }
   }
 
   const cookie = extraCookie
@@ -22,21 +35,35 @@ export function buildPortalHeaders(targetUrl: string, extraCookie?: string): Rec
 
   return {
     'User-Agent': BROWSER_USER_AGENT,
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'Accept':
+      'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
     'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+    'Cache-Control': 'max-age=0',
     'Cookie': cookie,
     'Referer': referer,
+    'Sec-Ch-Ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+    'Sec-Ch-Ua-Mobile': '?0',
+    'Sec-Ch-Ua-Platform': '"Windows"',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': fetchSite,
+    'Sec-Fetch-User': '?1',
     'Upgrade-Insecure-Requests': '1',
   };
 }
 
 export interface ResolvedStreamResult {
   streamUrl: string;
-  streamType: 'hls' | 'video' | 'embed';
+  streamType: 'hls' | 'dash' | 'video' | 'embed';
   referer: string;
+  userAgent?: string;
   title?: string;
   thumbnail?: string;
   qualities: QualityOption[];
+  embedFallbackUrl?: string;
+  fallbackMode?: 'embed' | 'page';
+  fallbackReason?: string;
+  directBlocked?: boolean;
 }
 
 function isAv1Stream(label: string, url?: string): boolean {
@@ -257,29 +284,113 @@ function extractBalancedJsonAfter(text: string, pattern: RegExp): Record<string,
   return null;
 }
 
+function mergeCookieStrings(existing: string | undefined, incomingPairs: string[]): string {
+  const map = new Map<string, string>();
+  const parseIntoMap = (raw: string) => {
+    for (const part of raw.split(';')) {
+      const idx = part.indexOf('=');
+      if (idx > 0) {
+        const k = part.slice(0, idx).trim();
+        const v = part.slice(idx + 1).trim();
+        if (k) map.set(k, v);
+      }
+    }
+  };
+  if (existing) parseIntoMap(existing);
+  for (const pair of incomingPairs) parseIntoMap(pair);
+  return Array.from(map.entries())
+    .map(([k, v]) => `${k}=${v}`)
+    .join('; ');
+}
+
+function captureResponseCookies(
+  urlStr: string,
+  res: Response,
+  cookieJar: Map<string, string>
+): void {
+  const setCookies = res.headers.getSetCookie?.() || [];
+  if (setCookies.length === 0) return;
+  const pairs = setCookies.map((c) => c.split(';')[0]).filter(Boolean);
+  if (pairs.length === 0) return;
+  const parsed = new URL(urlStr);
+  const rootKey = getPortalRootDomain(parsed.hostname);
+  const merged = mergeCookieStrings(cookieJar.get(rootKey) || cookieJar.get(parsed.origin), pairs);
+  cookieJar.set(rootKey, merged);
+  cookieJar.set(parsed.origin, merged);
+}
+
+function isAntiBotChallenge(status: number, htmlSnippet: string): boolean {
+  if (status === 403 || status === 429 || status === 503) return true;
+  if (!htmlSnippet) return false;
+  return (
+    /cf-browser-verification|__cf_chl_|Just a moment\.\.\.|Attention Required!\s*\|\s*Cloudflare|Enable JavaScript and cookies to continue|verify you are human|Checking your browser/i.test(
+      htmlSnippet
+    ) && !htmlSnippet.includes('window.initials') && !htmlSnippet.includes('flashvars_')
+  );
+}
+
+export function deriveEmbedUrlFromPage(
+  pageUrl: string,
+  $?: cheerio.CheerioAPI,
+  html?: string
+): string | null {
+  const knownOfficialEmbed = toOfficialEmbedUrl(pageUrl);
+  if (knownOfficialEmbed) {
+    return knownOfficialEmbed;
+  }
+
+  if ($) {
+    const metaEmbed =
+      $('meta[name="twitter:player"]').attr('content') ||
+      $('meta[property="og:video:iframe"]').attr('content');
+    if (metaEmbed) {
+      const resolved = safeResolve(metaEmbed, pageUrl);
+      if (resolved && resolved !== pageUrl) {
+        return toOfficialEmbedUrl(resolved) || resolved;
+      }
+    }
+
+    const iframeEl = $(
+      'iframe[src*="embed"], iframe[src*="player"], iframe[src*="video"], iframe[data-src*="embed"], iframe[data-src*="player"]'
+    ).first();
+    const iframeSrc = iframeEl.attr('src') || iframeEl.attr('data-src');
+    if (iframeSrc) {
+      const resolved = safeResolve(iframeSrc, pageUrl);
+      if (resolved && resolved !== pageUrl) {
+        return toOfficialEmbedUrl(resolved) || resolved;
+      }
+    }
+  }
+
+  if (html) {
+    const jsonLdEmbed = html.match(/"embedUrl"\s*:\s*"([^"]+)"/i);
+    if (jsonLdEmbed) {
+      const resolved = safeResolve(jsonLdEmbed[1], pageUrl);
+      if (resolved && resolved !== pageUrl) {
+        return toOfficialEmbedUrl(resolved) || resolved;
+      }
+    }
+  }
+
+  return null;
+}
+
 export async function fetchWithPortalCookies(
   targetUrl: string,
   cookieJar: Map<string, string>,
   timeoutMs = 14000
 ): Promise<Response> {
-  const origin = new URL(targetUrl).origin;
-  const jarCookie = cookieJar.get(origin);
-  const headers = buildPortalHeaders(targetUrl, jarCookie);
+  const parsed = new URL(targetUrl);
+  const origin = parsed.origin;
+  const rootKey = getPortalRootDomain(parsed.hostname);
+  const jarCookie = cookieJar.get(rootKey) || cookieJar.get(origin);
+  const headers = buildPortalHeaders(targetUrl, jarCookie, origin + '/', 'same-origin');
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     let res = await fetch(targetUrl, { headers, signal: controller.signal, redirect: 'follow' });
-
-    // Capture Set-Cookie if available
-    const setCookies = res.headers.getSetCookie?.() || [];
-    if (setCookies.length > 0) {
-      const pairs = setCookies.map((c) => c.split(';')[0]).filter(Boolean);
-      if (pairs.length > 0) {
-        const merged = [jarCookie, ...pairs].filter(Boolean).join('; ');
-        cookieJar.set(origin, merged);
-      }
-    }
+    captureResponseCookies(res.url || targetUrl, res, cookieJar);
 
     // Handle lightweight document.cookie JS redirect gates
     const contentType = (res.headers.get('content-type') || '').toLowerCase();
@@ -288,15 +399,48 @@ export async function fetchWithPortalCookies(
       if (cloneText.length < 5000 && /document\.cookie\s*=/.test(cloneText)) {
         const cookieMatches = [...cloneText.matchAll(/document\.cookie\s*=\s*["']([^"';]+)/g)];
         if (cookieMatches.length > 0) {
-          const jsCookies = cookieMatches.map((m) => m[1]).join('; ');
-          const merged = [cookieJar.get(origin), jsCookies].filter(Boolean).join('; ');
+          const jsCookies = cookieMatches.map((m) => m[1]);
+          const merged = mergeCookieStrings(
+            cookieJar.get(rootKey) || cookieJar.get(origin),
+            jsCookies
+          );
+          cookieJar.set(rootKey, merged);
           cookieJar.set(origin, merged);
           res = await fetch(targetUrl, {
-            headers: buildPortalHeaders(targetUrl, merged),
+            headers: buildPortalHeaders(targetUrl, merged, origin + '/', 'same-origin'),
             signal: controller.signal,
             redirect: 'follow',
           });
+          captureResponseCookies(res.url || targetUrl, res, cookieJar);
         }
+      }
+    }
+
+    // Session warm-up retry if anti-bot / Cloudflare challenge or HTTP 403/429/503 encountered
+    const peekText =
+      res.ok && contentType.includes('text/html') ? (await res.clone().text()).slice(0, 6000) : '';
+    if (isAntiBotChallenge(res.status, peekText)) {
+      try {
+        const warmRes = await fetch(origin + '/', {
+          headers: buildPortalHeaders(
+            origin + '/',
+            cookieJar.get(rootKey) || cookieJar.get(origin),
+            'https://www.google.com/',
+            'cross-site'
+          ),
+          signal: controller.signal,
+          redirect: 'follow',
+        });
+        captureResponseCookies(warmRes.url || origin + '/', warmRes, cookieJar);
+        const warmedCookie = cookieJar.get(rootKey) || cookieJar.get(origin);
+        res = await fetch(targetUrl, {
+          headers: buildPortalHeaders(targetUrl, warmedCookie, origin + '/', 'same-origin'),
+          signal: controller.signal,
+          redirect: 'follow',
+        });
+        captureResponseCookies(res.url || targetUrl, res, cookieJar);
+      } catch {
+        // keep original response if warm-up fails
       }
     }
 
@@ -306,23 +450,63 @@ export async function fetchWithPortalCookies(
   }
 }
 
-export async function resolveVideoPageStream(watchPageUrl: string): Promise<ResolvedStreamResult> {
+export async function resolveVideoPageStream(
+  watchPageUrl: string,
+  depth = 0
+): Promise<ResolvedStreamResult> {
   const cookieJar = new Map<string, string>();
-  const res = await fetchWithPortalCookies(watchPageUrl, cookieJar, 15000);
-  if (!res.ok) {
-    throw new Error(`Servidor retornou HTTP ${res.status} ao abrir a página do vídeo.`);
+  let res: Response;
+  try {
+    res = await fetchWithPortalCookies(watchPageUrl, cookieJar, 15000);
+  } catch (err) {
+    if (depth > 0) {
+      throw err instanceof Error ? err : new Error('Erro ao abrir página do vídeo.');
+    }
+    const derivedEmbed = deriveEmbedUrlFromPage(watchPageUrl);
+    return {
+      streamUrl: derivedEmbed || watchPageUrl,
+      streamType: 'embed',
+      referer: watchPageUrl,
+      qualities: [],
+      embedFallbackUrl: derivedEmbed || watchPageUrl,
+      fallbackMode: derivedEmbed ? 'embed' : 'page',
+      fallbackReason:
+        err instanceof Error ? err.message : 'Conexão direta bloqueada; abrindo em modo navegador.',
+      directBlocked: true,
+    };
   }
 
   const finalUrl = res.url || watchPageUrl;
   const contentType = (res.headers.get('content-type') || '').toLowerCase();
 
-  // If URL already points directly to a video or HLS stream
+  if (!res.ok) {
+    if (depth > 0) {
+      throw new Error(`Servidor retornou HTTP ${res.status} ao abrir a página do vídeo.`);
+    }
+    const errHtml = contentType.includes('text/html') ? await res.text().catch(() => '') : '';
+    const $err = errHtml ? cheerio.load(errHtml) : undefined;
+    const derivedEmbed = deriveEmbedUrlFromPage(finalUrl, $err, errHtml);
+    return {
+      streamUrl: derivedEmbed || finalUrl,
+      streamType: 'embed',
+      referer: finalUrl,
+      qualities: [],
+      embedFallbackUrl: derivedEmbed || finalUrl,
+      fallbackMode: derivedEmbed ? 'embed' : 'page',
+      fallbackReason: `Servidor retornou HTTP ${res.status} (proteção anti-bot/Cloudflare). Abrindo em tela cheia integrada.`,
+      directBlocked: true,
+    };
+  }
+
+  // If URL already points directly to a video, HLS, or DASH stream
   if (contentType.startsWith('video/') || /\.mp4(\?|$)/i.test(finalUrl)) {
     return {
       streamUrl: finalUrl,
       streamType: 'video',
       referer: finalUrl,
+      userAgent: BROWSER_USER_AGENT,
       qualities: [{ label: 'Original', url: finalUrl, streamType: 'video' }],
+      embedFallbackUrl: finalUrl,
     };
   }
   if (contentType.includes('mpegurl') || /\.m3u8(\?|$)/i.test(finalUrl)) {
@@ -330,11 +514,55 @@ export async function resolveVideoPageStream(watchPageUrl: string): Promise<Reso
       streamUrl: finalUrl,
       streamType: 'hls',
       referer: finalUrl,
+      userAgent: BROWSER_USER_AGENT,
       qualities: [{ label: 'HLS', url: finalUrl, streamType: 'hls' }],
+      embedFallbackUrl: finalUrl,
+    };
+  }
+  if (contentType.includes('dash+xml') || /\.mpd(\?|$)/i.test(finalUrl)) {
+    return {
+      streamUrl: finalUrl,
+      streamType: 'dash',
+      referer: finalUrl,
+      userAgent: BROWSER_USER_AGENT,
+      qualities: [{ label: 'DASH', url: finalUrl, streamType: 'dash' }],
+      embedFallbackUrl: finalUrl,
     };
   }
 
-  const html = await res.text();
+  let html = await res.text();
+
+  // If HTML still appears to be an anti-bot page without window.initials, try one more time with clean mobile/alternate Referer + session cookies
+  if (isAntiBotChallenge(res.status, html) && depth === 0) {
+    try {
+      const parsed = new URL(finalUrl);
+      const rootKey = getPortalRootDomain(parsed.hostname);
+      const retryRes = await fetch(finalUrl, {
+        headers: buildPortalHeaders(
+          finalUrl,
+          cookieJar.get(rootKey) || cookieJar.get(parsed.origin),
+          finalUrl,
+          'same-origin'
+        ),
+        redirect: 'follow',
+      });
+      if (retryRes.ok) {
+        html = await retryRes.text();
+      }
+    } catch {
+      // ignore retry failure
+    }
+  }
+
+  return extractStreamsFromHtml(html, finalUrl, cookieJar, depth);
+}
+
+export async function extractStreamsFromHtml(
+  html: string,
+  finalUrl: string,
+  cookieJar: Map<string, string> = new Map(),
+  depth = 0
+): Promise<ResolvedStreamResult> {
   const $ = cheerio.load(html);
 
   const pageTitle =
@@ -347,19 +575,19 @@ export async function resolveVideoPageStream(watchPageUrl: string): Promise<Reso
   const qualities: QualityOption[] = [];
   const seenUrls = new Set<string>();
 
-  const pushQuality = (label: string, rawUrl: string, forcedType?: 'hls' | 'video') => {
+  const pushQuality = (label: string, rawUrl: string, forcedType?: 'hls' | 'dash' | 'video') => {
     const resolved = safeResolve(rawUrl, finalUrl);
     if (!resolved || seenUrls.has(resolved)) return;
     if (isPreviewClipUrl(resolved)) return;
     seenUrls.add(resolved);
-    const isHls =
-      forcedType === 'hls' ||
-      resolved.toLowerCase().includes('.m3u8') ||
-      /master\.m3u8/i.test(resolved);
+    const lower = resolved.toLowerCase();
+    const isHls = forcedType === 'hls' || lower.includes('.m3u8') || /master\.m3u8/i.test(resolved);
+    const isDash = forcedType === 'dash' || lower.includes('.mpd');
+    const streamType: 'hls' | 'dash' | 'video' = isHls ? 'hls' : isDash ? 'dash' : 'video';
     qualities.push({
-      label: label || (isHls ? 'HLS' : 'MP4'),
+      label: label || (isHls ? 'HLS' : isDash ? 'DASH' : 'MP4'),
       url: resolved,
-      streamType: isHls ? 'hls' : 'video',
+      streamType,
     });
   };
 
@@ -549,7 +777,7 @@ export async function resolveVideoPageStream(watchPageUrl: string): Promise<Reso
     pushQuality('OG Video', ogVideo);
   }
 
-  // 7. Generic fallback scan for any .m3u8 or .mp4 URL in scripts/HTML
+  // 7. Generic fallback scan for any .m3u8, .mpd, or .mp4 URL in scripts/HTML
   if (qualities.length === 0) {
     const genericHls = [...html.matchAll(/https?:\\?\/\\?\/[^"'\s<>]+\.m3u8[^"'\s<>]*/gi)];
     for (const m of genericHls) {
@@ -561,6 +789,10 @@ export async function resolveVideoPageStream(watchPageUrl: string): Promise<Reso
       } else {
         pushQuality('HLS', rawUrl, 'hls');
       }
+    }
+    const genericDash = [...html.matchAll(/https?:\\?\/\\?\/[^"'\s<>]+\.mpd[^"'\s<>]*/gi)];
+    for (const m of genericDash) {
+      pushQuality('DASH', m[0], 'dash');
     }
     const genericMp4 = [...scriptTexts.matchAll(/https?:\\?\/\\?\/[^"'\s<>]+\.mp4[^"'\s<>]*/gi)];
     for (const m of genericMp4) {
@@ -607,6 +839,10 @@ export async function resolveVideoPageStream(watchPageUrl: string): Promise<Reso
         }
         clearTimeout(t);
         if (checkRes.ok || checkRes.status === 206) {
+          const respCt = (checkRes.headers.get('content-type') || '').toLowerCase();
+          if (respCt.includes('text/html') || respCt.includes('application/xhtml')) {
+            return;
+          }
           let updatedQ = q;
           if (q.streamType === 'hls') {
             const m3u8Text = await checkRes.text();
@@ -638,46 +874,70 @@ export async function resolveVideoPageStream(watchPageUrl: string): Promise<Reso
     return 0;
   });
 
+  const derivedEmbed = deriveEmbedUrlFromPage(finalUrl, $, html);
+
   if (usableQualities.length > 0) {
     return {
       streamUrl: usableQualities[0].url,
       streamType: usableQualities[0].streamType,
       referer: finalUrl,
+      userAgent: BROWSER_USER_AGENT,
       title: pageTitle,
       thumbnail,
       qualities: usableQualities,
+      embedFallbackUrl: derivedEmbed || finalUrl,
     };
   }
 
-  // 7. Embed iframe fallback
-  const iframeSrc = $('iframe[src*="embed"], iframe[src*="player"]').first().attr('src');
-  if (iframeSrc) {
-    const resolvedIframe = safeResolve(iframeSrc, finalUrl);
-    if (resolvedIframe) {
-      return {
-        streamUrl: resolvedIframe,
-        streamType: 'embed',
-        referer: finalUrl,
-        title: pageTitle,
-        thumbnail,
-        qualities: [],
-      };
+  // 8. Embed iframe fallback (unwrap one level deep to extract direct stream when possible; otherwise return embed/page fallback)
+  if (derivedEmbed) {
+    if (depth < 1) {
+      try {
+        const inner = await resolveVideoPageStream(derivedEmbed, depth + 1);
+        if (inner.streamType !== 'embed' && inner.qualities.length > 0) {
+          return {
+            ...inner,
+            title: inner.title || pageTitle,
+            thumbnail: inner.thumbnail || thumbnail,
+            embedFallbackUrl: derivedEmbed,
+          };
+        }
+      } catch {
+        // fall back to embed URL below
+      }
     }
-  }
-
-  // Pornhub / standard embed URL construction fallback
-  const viewKeyMatch = finalUrl.match(/viewkey=([a-zA-Z0-9]+)/i);
-  if (viewKeyMatch) {
-    const origin = new URL(finalUrl).origin;
     return {
-      streamUrl: `${origin}/embed/${viewKeyMatch[1]}`,
+      streamUrl: derivedEmbed,
       streamType: 'embed',
       referer: finalUrl,
       title: pageTitle,
       thumbnail,
       qualities: [],
+      embedFallbackUrl: derivedEmbed,
+      fallbackMode: 'embed',
+      fallbackReason: isAntiBotChallenge(200, html)
+        ? 'Proteção Cloudflare/anti-bot detectada; exibindo player incorporado.'
+        : 'Stream direto indisponível; exibindo player incorporado em tela cheia.',
     };
   }
 
-  throw new Error('Nenhum fluxo de vídeo (.m3u8 ou .mp4) foi encontrado nesta página.');
+  // 9. Ultimate fallback when depth === 0: open the watch page itself in fullscreen iframe mode
+  if (depth === 0) {
+    return {
+      streamUrl: finalUrl,
+      streamType: 'embed',
+      referer: finalUrl,
+      title: pageTitle,
+      thumbnail,
+      qualities: [],
+      embedFallbackUrl: finalUrl,
+      fallbackMode: 'page',
+      fallbackReason: isAntiBotChallenge(200, html)
+        ? 'Bloqueio anti-bot detectado; abrindo página do vídeo diretamente em tela cheia.'
+        : 'Nenhum stream direto exposto; abrindo página do vídeo diretamente em tela cheia.',
+      directBlocked: isAntiBotChallenge(200, html),
+    };
+  }
+
+  throw new Error('Nenhum fluxo de vídeo (.m3u8, .mpd ou .mp4) foi encontrado nesta página.');
 }

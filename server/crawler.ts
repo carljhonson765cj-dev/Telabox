@@ -43,6 +43,7 @@ const WATCH_PAGE_PATTERNS = [
   /\/videos\/[^/?#]+-\d+/i,
   /\/watch\/[a-zA-Z0-9_-]+/i,
   /\/watch\?v=/i,
+  /\/demo-server\/[^/]+\/[^/]+\.html$/i,
 ];
 
 const NON_VIDEO_LINK_PATTERNS = [
@@ -62,6 +63,34 @@ const CATEGORY_PRIORITY_PATTERNS = [
   /\/c\/[a-z0-9_-]+/i,
   /\/tags?\//i,
 ];
+
+const DEFAULT_INITIAL_SCAN_PAGES = 5;
+const MAX_SCAN_PAGES_PER_REQUEST = 5;
+const DEFAULT_BROWSE_BATCH_PAGES = 4;
+const MAX_BROWSE_BATCH_PAGES = 5;
+const PAGE_DELAY_MIN_MS = 320;
+const PAGE_DELAY_MAX_MS = 480;
+const MAX_HTML_BYTES = 4 * 1024 * 1024; // 4 MB safety cap per HTML page
+const MAX_CRAWL_QUEUE_SIZE = 120;
+
+function randomPageDelayMs(): number {
+  return PAGE_DELAY_MIN_MS + Math.floor(Math.random() * (PAGE_DELAY_MAX_MS - PAGE_DELAY_MIN_MS + 1));
+}
+
+async function sleepWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted || ms <= 0) return;
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
 
 export interface CrawlOptions {
   url: string;
@@ -94,6 +123,15 @@ export interface CrawlResult {
   nextPageUrl?: string;
   latestUrl?: string;
   categorySources?: Record<string, CategorySource>;
+}
+
+export interface BrowseBatchResult {
+  items: MediaItem[];
+  nextPageUrl?: string;
+  pagesFetched: number;
+  visitedUrls: string[];
+  categorySources?: Record<string, CategorySource>;
+  hasMore: boolean;
 }
 
 function hashId(input: string): string {
@@ -335,12 +373,15 @@ function extractXhamsterInitialsVideos(
   }
   if (!jsonStr) return [];
 
-  let initials: unknown;
+  let initials: unknown = null;
   try {
     initials = JSON.parse(jsonStr);
   } catch {
+    jsonStr = null;
     return [];
   }
+  // Free raw JSON slice immediately after parsing
+  jsonStr = null;
 
   const results: MediaItem[] = [];
   const seen = new Set<string>();
@@ -395,7 +436,12 @@ function extractXhamsterInitialsVideos(
     }
   };
 
-  walk(initials);
+  try {
+    walk(initials);
+  } finally {
+    // Release parsed initials tree immediately so V8 can GC it before next page
+    initials = null;
+  }
   return results;
 }
 
@@ -609,8 +655,12 @@ export async function crawlServer(options: CrawlOptions): Promise<CrawlResult> {
   const rootUrl = normalizeTargetUrl(options.url, options.localBaseUrl);
   const rootParsed = new URL(rootUrl);
 
-  const maxPages = options.mode === 'quick' ? 1 : (options.maxPages ?? 30);
-  const maxDepth = options.mode === 'quick' ? 0 : (options.maxDepth ?? 2);
+  // Cap single crawl to 3-5 pages by default to stay well within 512MB RAM and avoid timeouts;
+  // additional pages are fetched on demand via browseServerPagesBatch.
+  const requestedPages =
+    options.mode === 'quick' ? 1 : (options.maxPages ?? DEFAULT_INITIAL_SCAN_PAGES);
+  const maxPages = Math.min(Math.max(1, requestedPages), MAX_SCAN_PAGES_PER_REQUEST);
+  const maxDepth = options.mode === 'quick' ? 0 : Math.min(Math.max(0, options.maxDepth ?? 1), 3);
 
   const cookieJar = new Map<string, string>();
   const visitedPages = new Set<string>();
@@ -709,132 +759,139 @@ export async function crawlServer(options: CrawlOptions): Promise<CrawlResult> {
     }
   };
 
+  // Process pages sequentially (1 at a time) with inter-page delay (320-480ms)
+  // so only 1 raw HTML buffer and 1 Cheerio DOM ever exist in memory at once.
   while ((priorityQueue.length > 0 || normalQueue.length > 0) && pagesScanned < maxPages) {
     if (options.signal?.aborted) break;
 
-    const batch: Array<{ url: string; depth: number; categoryHint?: string }> = [];
-    while (batch.length < 3 && (priorityQueue.length > 0 || normalQueue.length > 0)) {
-      const nextTask = priorityQueue.length > 0 ? priorityQueue.shift()! : normalQueue.shift()!;
-      batch.push(nextTask);
+    const task = priorityQueue.length > 0 ? priorityQueue.shift()! : normalQueue.shift()!;
+    if (visitedPages.has(task.url)) continue;
+
+    if (pagesScanned > 0) {
+      await sleepWithAbort(randomPageDelayMs(), options.signal);
+      if (options.signal?.aborted) break;
     }
 
-    await Promise.all(
-      batch.map(async (task) => {
-        if (options.signal?.aborted || pagesScanned >= maxPages) return;
-        if (visitedPages.has(task.url)) return;
-        visitedPages.add(task.url);
-        pagesScanned++;
-        emitProgress(task.url);
+    visitedPages.add(task.url);
+    pagesScanned++;
+    emitProgress(task.url);
 
+    let bodyText: string | null = null;
+    let cleanupCheerio: cheerio.CheerioAPI | null = null;
+
+    try {
+      const res = await fetchWithPortalCookies(task.url, cookieJar, 12000);
+      if (!res.ok) continue;
+
+      const contentType = (res.headers.get('content-type') || '').toLowerCase();
+      const finalUrl = res.url || task.url;
+
+      // Direct video file URL entered directly
+      if (contentType.startsWith('video/') || (isVideoUrl(finalUrl) && !finalUrl.toLowerCase().endsWith('.m3u8'))) {
+        const rawTitle = extractFilenameFromUrl(finalUrl);
+        const cleaned = cleanMediaTitle(rawTitle);
+        addItem({
+          id: hashId(finalUrl),
+          title: cleaned.title,
+          rawTitle,
+          url: finalUrl,
+          streamType: 'video',
+          category: 'Vídeo Direto',
+          folderPath: '/',
+          quality: cleaned.quality,
+          format: getExtension(finalUrl).slice(1).toUpperCase() || 'MP4',
+          sourcePageUrl: task.url,
+        });
+        continue;
+      }
+
+      bodyText = await res.text();
+      if (!bodyText) continue;
+      if (bodyText.length > MAX_HTML_BYTES) {
+        bodyText = bodyText.slice(0, MAX_HTML_BYTES);
+      }
+
+      // 1. M3U / M3U8 Playlist
+      if (
+        bodyText.trimStart().startsWith('#EXTM3U') ||
+        contentType.includes('mpegurl') ||
+        finalUrl.toLowerCase().endsWith('.m3u') ||
+        finalUrl.toLowerCase().endsWith('.m3u8')
+      ) {
+        if (bodyText.includes('#EXT-X-STREAM-INF')) {
+          const rawTitle = extractFilenameFromUrl(finalUrl);
+          const cleaned = cleanMediaTitle(rawTitle);
+          addItem({
+            id: hashId(finalUrl),
+            title: cleaned.title,
+            rawTitle,
+            url: finalUrl,
+            streamType: 'hls',
+            category: 'Streams HLS',
+            folderPath: '/',
+            quality: cleaned.quality || 'HLS',
+            format: 'HLS',
+            sourcePageUrl: task.url,
+          });
+          continue;
+        }
+        detectedKind = 'iptv';
+        const parsedM3u = parseM3U(bodyText, finalUrl);
+        for (const item of parsedM3u) addItem(item);
+        continue;
+      }
+
+      // 2. JSON API
+      if (contentType.includes('application/json') || bodyText.trimStart().startsWith('{') || bodyText.trimStart().startsWith('[')) {
         try {
-          const res = await fetchWithPortalCookies(task.url, cookieJar, 12000);
-          if (!res.ok) return;
+          const json = JSON.parse(bodyText);
+          const { siteTitle, items } = parseJsonMedia(json, finalUrl);
+          if (siteTitle && task.depth === 0) serverName = siteTitle;
+          for (const item of items) addItem(item);
+          continue;
+        } catch {
+          // not valid JSON
+        }
+      }
 
-          const contentType = (res.headers.get('content-type') || '').toLowerCase();
-          const finalUrl = res.url || task.url;
+      // 3. RSS / Atom XML
+      if (contentType.includes('xml') || bodyText.trimStart().startsWith('<?xml') || bodyText.includes('<rss')) {
+        detectedKind = 'feed';
+        const { siteTitle, items } = parseXmlFeed(bodyText, finalUrl);
+        if (siteTitle && task.depth === 0) serverName = siteTitle;
+        for (const item of items) addItem(item);
+        continue;
+      }
 
-          // Direct video file URL entered directly
-          if (contentType.startsWith('video/') || (isVideoUrl(finalUrl) && !finalUrl.toLowerCase().endsWith('.m3u8'))) {
-            const rawTitle = extractFilenameFromUrl(finalUrl);
-            const cleaned = cleanMediaTitle(rawTitle);
-            addItem({
-              id: hashId(finalUrl),
-              title: cleaned.title,
-              rawTitle,
-              url: finalUrl,
-              streamType: 'video',
-              category: 'Vídeo Direto',
-              folderPath: '/',
-              quality: cleaned.quality,
-              format: getExtension(finalUrl).slice(1).toUpperCase() || 'MP4',
-              sourcePageUrl: task.url,
-            });
-            return;
-          }
+      // 4. Direct Watch Page entered at depth === 0 (e.g. user pasted a single video link)
+      if (task.depth === 0 && isWatchPageUrl(finalUrl)) {
+        try {
+          const resolved = await resolveVideoPageStream(finalUrl);
+          const rawTitle = resolved.title || extractFilenameFromUrl(finalUrl);
+          addItem({
+            id: hashId(finalUrl),
+            title: rawTitle,
+            rawTitle,
+            url: resolved.streamUrl,
+            streamType: resolved.streamType,
+            category: 'Vídeo Selecionado',
+            folderPath: '/',
+            thumbnail: resolved.thumbnail,
+            quality: resolved.qualities[0]?.label,
+            format: resolved.streamType.toUpperCase(),
+            qualities: resolved.qualities,
+            sourcePageUrl: finalUrl,
+          });
+          continue;
+        } catch {
+          // continue normal HTML parsing
+        }
+      }
 
-          const bodyText = await res.text();
-          if (!bodyText) return;
-
-          // 1. M3U / M3U8 Playlist
-          if (
-            bodyText.trimStart().startsWith('#EXTM3U') ||
-            contentType.includes('mpegurl') ||
-            finalUrl.toLowerCase().endsWith('.m3u') ||
-            finalUrl.toLowerCase().endsWith('.m3u8')
-          ) {
-            if (bodyText.includes('#EXT-X-STREAM-INF')) {
-              const rawTitle = extractFilenameFromUrl(finalUrl);
-              const cleaned = cleanMediaTitle(rawTitle);
-              addItem({
-                id: hashId(finalUrl),
-                title: cleaned.title,
-                rawTitle,
-                url: finalUrl,
-                streamType: 'hls',
-                category: 'Streams HLS',
-                folderPath: '/',
-                quality: cleaned.quality || 'HLS',
-                format: 'HLS',
-                sourcePageUrl: task.url,
-              });
-              return;
-            }
-            detectedKind = 'iptv';
-            const parsedM3u = parseM3U(bodyText, finalUrl);
-            for (const item of parsedM3u) addItem(item);
-            return;
-          }
-
-          // 2. JSON API
-          if (contentType.includes('application/json') || bodyText.trimStart().startsWith('{') || bodyText.trimStart().startsWith('[')) {
-            try {
-              const json = JSON.parse(bodyText);
-              const { siteTitle, items } = parseJsonMedia(json, finalUrl);
-              if (siteTitle && task.depth === 0) serverName = siteTitle;
-              for (const item of items) addItem(item);
-              return;
-            } catch {
-              // not valid JSON
-            }
-          }
-
-          // 3. RSS / Atom XML
-          if (contentType.includes('xml') || bodyText.trimStart().startsWith('<?xml') || bodyText.includes('<rss')) {
-            detectedKind = 'feed';
-            const { siteTitle, items } = parseXmlFeed(bodyText, finalUrl);
-            if (siteTitle && task.depth === 0) serverName = siteTitle;
-            for (const item of items) addItem(item);
-            return;
-          }
-
-          // 4. Direct Watch Page entered at depth === 0 (e.g. user pasted a single video link)
-          if (task.depth === 0 && isWatchPageUrl(finalUrl)) {
-            try {
-              const resolved = await resolveVideoPageStream(finalUrl);
-              const rawTitle = resolved.title || extractFilenameFromUrl(finalUrl);
-              addItem({
-                id: hashId(finalUrl),
-                title: rawTitle,
-                rawTitle,
-                url: resolved.streamUrl,
-                streamType: resolved.streamType,
-                category: 'Vídeo Selecionado',
-                folderPath: '/',
-                thumbnail: resolved.thumbnail,
-                quality: resolved.qualities[0]?.label,
-                format: resolved.streamType.toUpperCase(),
-                qualities: resolved.qualities,
-                sourcePageUrl: finalUrl,
-              });
-              return;
-            } catch {
-              // continue normal HTML parsing
-            }
-          }
-
-          // 5. HTML Page (Open Directory or Video Portal)
-          const $ = cheerio.load(bodyText);
-          const pageTitle = $('title').first().text().trim();
+      // 5. HTML Page (Open Directory or Video Portal)
+      const $ = cheerio.load(bodyText);
+      cleanupCheerio = $;
+      const pageTitle = $('title').first().text().trim();
           const ogTitle = $('meta[property="og:title"]').attr('content')?.trim();
           const ogImage = $('meta[property="og:image"]').attr('content')?.trim();
           const ogVideo =
@@ -870,7 +927,9 @@ export async function crawlServer(options: CrawlOptions): Promise<CrawlResult> {
             task.categoryHint || (task.depth > 0 && h1Title && h1Title.length < 40 ? h1Title : undefined)
           );
 
-          const discoveredNextPage = extractNextPageUrl($, finalUrl);
+          const discoveredNextPage =
+            extractNextPageUrl($, finalUrl) ||
+            (itemsMap.size > 8 ? inferNextPaginatedUrl(finalUrl) : undefined);
           if (task.depth === 0) {
             if (discoveredNextPage) rootNextPageUrl = discoveredNextPage;
             const htmlLatest = detectLatestLinkInHtml($, finalUrl, rootParsed);
@@ -1165,7 +1224,7 @@ export async function crawlServer(options: CrawlOptions): Promise<CrawlResult> {
             }
 
             // 2) Portal Video Card linking to a watch page (e.g., Pornhub view_video, XVideos /video123, xHamster /videos/...-xh...)
-            const $cardContainer = $a.closest('li, article, .video-item, .video-thumb, .thumb-list__item, .thumb-block, .videoblock, .videoBox, .wrap, .card');
+            const $cardContainer = $a.closest('li, article, .video-card, .video-item, .video-thumb, .thumb-list__item, .thumb-block, .videoblock, .videoBox, .wrap, .card');
             const anchorOwnThumb = extractLazyThumb($a, finalUrl);
             const cardThumb = anchorOwnThumb || extractLazyThumb($cardContainer, finalUrl);
             const cardDuration = extractDurationFromCard($cardContainer.length ? $cardContainer : $a);
@@ -1173,7 +1232,10 @@ export async function crawlServer(options: CrawlOptions): Promise<CrawlResult> {
             const looksLikeVideoCard =
               !isNonVideoProfileLink &&
               (isWatchPageUrl(resolved) ||
-                (Boolean(anchorOwnThumb) && Boolean(cardDuration) && resolvedParsed.origin === rootParsed.origin && !resolved.endsWith('/')));
+                (Boolean(anchorOwnThumb) &&
+                  (Boolean(cardDuration) || $cardContainer.hasClass('video-card') || Boolean($a.attr('data-category'))) &&
+                  resolvedParsed.origin === rootParsed.origin &&
+                  !resolved.endsWith('/')));
 
             if (looksLikeVideoCard) {
               const titleLink = $cardContainer.find('.video-thumb-info__name, .title a, p.title a').first();
@@ -1244,14 +1306,19 @@ export async function crawlServer(options: CrawlOptions): Promise<CrawlResult> {
               return;
             }
 
-            // 4) Internal page / category / folder crawling
-            if (task.depth < maxDepth && resolvedParsed.origin === rootParsed.origin) {
+            // 4) Internal page / category / folder crawling (bounded queue, skip deep numbered pagination)
+            if (
+              task.depth < maxDepth &&
+              resolvedParsed.origin === rootParsed.origin &&
+              queuedUrls.size < MAX_CRAWL_QUEUE_SIZE
+            ) {
               resolvedParsed.hash = '';
               const cleanNext = resolvedParsed.toString();
 
               if (visitedPages.has(cleanNext) || queuedUrls.has(cleanNext)) return;
               if (IGNORED_PATH_PATTERNS.some((re) => re.test(cleanNext))) return;
               if (isImageUrl(cleanNext) || isSubtitleUrl(cleanNext)) return;
+              if (!isIndexDirectory && /[?&](?:page|p)=\d+|\/page\/\d+/i.test(cleanNext)) return;
 
               if (isIndexDirectory && !resolvedParsed.pathname.startsWith(rootParsed.pathname)) return;
               if (isIndexDirectory && /^[?;]?(C=[NMSD];O=[AD]|sort=)/.test(resolvedParsed.search.slice(1))) return;
@@ -1285,11 +1352,20 @@ export async function crawlServer(options: CrawlOptions): Promise<CrawlResult> {
               }
             }
           });
+    } catch {
+      // Skip unreachable / timed-out subpages gracefully
+    } finally {
+      // Explicitly release raw HTML string & Cheerio DOM tree after extracting titles/thumbs/links
+      if (cleanupCheerio) {
+        try {
+          cleanupCheerio.root().empty();
         } catch {
-          // Skip unreachable / timed-out subpages gracefully
+          // ignore DOM clear error
         }
-      })
-    );
+        cleanupCheerio = null;
+      }
+      bodyText = null;
+    }
   }
 
   const items = Array.from(itemsMap.values());
@@ -1526,6 +1602,159 @@ function detectLatestLinkInHtml(
   return matched;
 }
 
+function inferNextPaginatedUrl(currentUrl: string): string | undefined {
+  try {
+    const parsed = new URL(currentUrl);
+    // 1) Explicit ?page=N or ?p=N query param
+    if (parsed.searchParams.has('page')) {
+      const cur = Math.max(1, Number(parsed.searchParams.get('page')) || 1);
+      parsed.searchParams.set('page', String(cur + 1));
+      return parsed.toString();
+    }
+    if (parsed.searchParams.has('p')) {
+      const cur = Math.max(0, Number(parsed.searchParams.get('p')) || 0);
+      parsed.searchParams.set('p', String(cur + 1));
+      return parsed.toString();
+    }
+
+    // 2) Pathname /page/N/
+    const wpMatch = parsed.pathname.match(/^(.*)\/page\/(\d+)(\/?)$/i);
+    if (wpMatch) {
+      parsed.pathname = `${wpMatch[1]}/page/${Number(wpMatch[2]) + 1}${wpMatch[3] || '/'}`;
+      return parsed.toString();
+    }
+
+    // 3) XVideos /new/N or /c/slug/N
+    const host = parsed.hostname.toLowerCase();
+    if (host.includes('xvideos')) {
+      const xvNew = parsed.pathname.match(/^\/new\/(\d+)\/?$/i);
+      if (xvNew) {
+        parsed.pathname = `/new/${Number(xvNew[1]) + 1}`;
+        return parsed.toString();
+      }
+      const xvCat = parsed.pathname.match(/^(\/c\/[^/]+)(?:\/(\d+))?\/?$/i);
+      if (xvCat) {
+        const nextNum = (xvCat[2] ? Number(xvCat[2]) : 0) + 1;
+        parsed.pathname = `${xvCat[1]}/${nextNum}`;
+        return parsed.toString();
+      }
+      if (parsed.pathname === '/' || parsed.pathname === '') {
+        parsed.pathname = '/new/1';
+        return parsed.toString();
+      }
+    }
+
+    // 4) Trailing numeric segment on known video portals (e.g. xHamster /newest/2, ePorner /2/)
+    if (/(xhamster|eporner|spankbang|xnxx)/i.test(host)) {
+      const numMatch = parsed.pathname.match(/^(.*)\/(\d+)(\/?)$/);
+      if (numMatch && Number(numMatch[2]) < 10000) {
+        parsed.pathname = `${numMatch[1]}/${Number(numMatch[2]) + 1}${numMatch[3] || ''}`;
+        return parsed.toString();
+      }
+    }
+
+    // 5) First page of a known multi-page portal listing -> ?page=2
+    if (/(xhamster|pornhub|redtube|youporn)/i.test(host)) {
+      parsed.searchParams.set('page', '2');
+      return parsed.toString();
+    }
+  } catch {
+    // ignore URL parse error
+  }
+  return undefined;
+}
+
+export async function browseServerPagesBatch(options: {
+  pageUrl: string;
+  pages?: number;
+  categoryName?: string;
+  localBaseUrl?: string;
+  signal?: AbortSignal;
+}): Promise<BrowseBatchResult> {
+  const targetPages = Math.min(
+    Math.max(1, options.pages ?? DEFAULT_BROWSE_BATCH_PAGES),
+    MAX_BROWSE_BATCH_PAGES
+  );
+  const startUrl = normalizeTargetUrl(options.pageUrl, options.localBaseUrl);
+  const visited = new Set<string>();
+  const collectedItems: MediaItem[] = [];
+  const mergedCategorySources: Record<string, CategorySource> = {};
+  const visitedUrls: string[] = [];
+
+  let currentUrl: string | undefined = startUrl;
+  let pagesFetched = 0;
+  let nextPageUrl: string | undefined;
+
+  for (let i = 0; i < targetPages && currentUrl; i++) {
+    if (options.signal?.aborted) break;
+    if (visited.has(currentUrl)) break;
+
+    if (i > 0) {
+      await sleepWithAbort(randomPageDelayMs(), options.signal);
+      if (options.signal?.aborted) break;
+    }
+
+    visited.add(currentUrl);
+    visitedUrls.push(currentUrl);
+
+    const single: CrawlResult = await crawlServer({
+      url: currentUrl,
+      mode: 'quick',
+      maxPages: 1,
+      maxDepth: 0,
+      localBaseUrl: options.localBaseUrl,
+      signal: options.signal,
+    });
+
+    pagesFetched++;
+
+    const mapped = options.categoryName
+      ? single.items.map((item) => ({
+          ...item,
+          category: options.categoryName!,
+          folderPath: '/' + options.categoryName!,
+        }))
+      : single.items;
+
+    for (const item of mapped) {
+      collectedItems.push(item);
+    }
+
+    if (single.categorySources) {
+      for (const [k, v] of Object.entries(single.categorySources)) {
+        if (!mergedCategorySources[k]) {
+          mergedCategorySources[k] = v;
+        }
+      }
+    }
+
+    const candidateNext: string | undefined =
+      single.nextPageUrl ||
+      (single.items.length > 0 ? inferNextPaginatedUrl(currentUrl) : undefined);
+
+    if (candidateNext && !visited.has(candidateNext) && single.items.length > 0) {
+      nextPageUrl = candidateNext;
+      currentUrl = candidateNext;
+    } else {
+      nextPageUrl = undefined;
+      currentUrl = undefined;
+      break;
+    }
+  }
+
+  const dedupedItems = deduplicateMediaItems(collectedItems, { acrossCategories: true });
+
+  return {
+    items: dedupedItems,
+    nextPageUrl,
+    pagesFetched,
+    visitedUrls,
+    categorySources:
+      Object.keys(mergedCategorySources).length > 0 ? mergedCategorySources : undefined,
+    hasMore: Boolean(nextPageUrl) && dedupedItems.length > 0,
+  };
+}
+
 export async function browseServerPage(options: {
   pageUrl: string;
   categoryName?: string;
@@ -1535,26 +1764,15 @@ export async function browseServerPage(options: {
   nextPageUrl?: string;
   categorySources?: Record<string, CategorySource>;
 }> {
-  const result = await crawlServer({
-    url: options.pageUrl,
-    mode: 'quick',
-    maxPages: 1,
-    maxDepth: 0,
-    localBaseUrl: options.localBaseUrl,
+  const batch = await browseServerPagesBatch({
+    ...options,
+    pages: 1,
   });
 
-  const mappedItems = options.categoryName
-    ? result.items.map((item) => ({
-        ...item,
-        category: options.categoryName!,
-        folderPath: '/' + options.categoryName!,
-      }))
-    : result.items;
-
   return {
-    items: deduplicateMediaItems(mappedItems, { acrossCategories: true }),
-    nextPageUrl: result.nextPageUrl,
-    categorySources: result.categorySources,
+    items: batch.items,
+    nextPageUrl: batch.nextPageUrl,
+    categorySources: batch.categorySources,
   };
 }
 
@@ -1591,11 +1809,15 @@ export async function searchServerContent(options: {
   serverUrl: string;
   query: string;
   page?: number;
+  pages?: number;
   localBaseUrl?: string;
+  signal?: AbortSignal;
 }): Promise<{
   items: MediaItem[];
   searchUrl: string;
   page: number;
+  nextPage: number;
+  pagesFetched: number;
   hasMore: boolean;
   nextPageUrl?: string;
 }> {
@@ -1603,108 +1825,165 @@ export async function searchServerContent(options: {
   const rootParsed = new URL(rootUrl);
   const host = rootParsed.hostname.toLowerCase();
   const q = options.query.trim();
-  const page = Math.max(1, options.page || 1);
-  if (!q) return { items: [], searchUrl: rootUrl, page, hasMore: false };
+  const startPage = Math.max(1, options.page || 1);
+  const batchPages = Math.min(Math.max(1, options.pages ?? 3), MAX_BROWSE_BATCH_PAGES);
 
-  const encoded = encodeURIComponent(q);
-  const candidateUrls: string[] = [];
-
-  if (host.includes('pornhub')) {
-    candidateUrls.push(
-      page === 1
-        ? `${rootParsed.origin}/video/search?search=${encoded}`
-        : `${rootParsed.origin}/video/search?search=${encoded}&page=${page}`
-    );
-  } else if (host.includes('xvideos')) {
-    candidateUrls.push(
-      page === 1
-        ? `${rootParsed.origin}/?k=${encoded}`
-        : `${rootParsed.origin}/?k=${encoded}&p=${page - 1}`
-    );
-  } else if (host.includes('xhamster')) {
-    candidateUrls.push(
-      page === 1
-        ? `${rootParsed.origin}/search/${encoded}`
-        : `${rootParsed.origin}/search/${encoded}?page=${page}`
-    );
-  } else if (host.includes('redtube')) {
-    candidateUrls.push(
-      page === 1
-        ? `${rootParsed.origin}/?search=${encoded}`
-        : `${rootParsed.origin}/?search=${encoded}&page=${page}`
-    );
-  } else if (host.includes('eporner')) {
-    candidateUrls.push(
-      page === 1
-        ? `${rootParsed.origin}/search/${encoded}/`
-        : `${rootParsed.origin}/search/${encoded}/${page}/`
-    );
-  } else if (host.includes('spankbang')) {
-    candidateUrls.push(
-      page === 1
-        ? `${rootParsed.origin}/s/${encoded}/`
-        : `${rootParsed.origin}/s/${encoded}/${page}/`
-    );
-  } else {
-    try {
-      const cookieJar = new Map<string, string>();
-      const res = await fetchWithPortalCookies(rootUrl, cookieJar, 8000);
-      if (res.ok) {
-        const html = await res.text();
-        const $ = cheerio.load(html);
-        $('form').each((_, formEl) => {
-          const $form = $(formEl);
-          const action = $form.attr('action') || rootUrl;
-          const input = $form.find('input[type="search"], input[name="q"], input[name="s"], input[name="search"], input[name="k"], input[name="query"]').first();
-          const paramName = input.attr('name');
-          if (paramName) {
-            try {
-              const target = new URL(action, rootUrl);
-              target.searchParams.set(paramName, q);
-              if (page > 1) target.searchParams.set('page', String(page));
-              candidateUrls.push(target.toString());
-            } catch {
-              // ignore invalid action
-            }
-          }
-        });
-      }
-    } catch {
-      // ignore form inspection errors
-    }
-
-    if (candidateUrls.length === 0) {
-      const pageSuffix = page > 1 ? `&page=${page}` : '';
-      candidateUrls.push(`${rootParsed.origin}/?s=${encoded}${pageSuffix}`);
-      candidateUrls.push(`${rootParsed.origin}/search?q=${encoded}${pageSuffix}`);
-    }
+  if (!q) {
+    return {
+      items: [],
+      searchUrl: rootUrl,
+      page: startPage,
+      nextPage: startPage + 1,
+      pagesFetched: 0,
+      hasMore: false,
+    };
   }
 
-  const collected: MediaItem[] = [];
-  const primarySearchUrl = candidateUrls[0] || rootUrl;
-  let discoveredNextUrl: string | undefined;
+  const encoded = encodeURIComponent(q);
 
-  for (const searchPageUrl of candidateUrls.slice(0, 2)) {
-    try {
-      const result = await crawlServer({
-        url: searchPageUrl,
-        mode: 'quick',
-        maxPages: 1,
-        maxDepth: 0,
-        localBaseUrl: options.localBaseUrl,
-      });
-
-      if (result.nextPageUrl) discoveredNextUrl = result.nextPageUrl;
-      for (const item of result.items) {
-        collected.push({
-          ...item,
-          category: `Busca: ${q}`,
-          folderPath: `/Busca/${q}`,
-        });
+  const buildSearchCandidates = async (targetPage: number): Promise<string[]> => {
+    const candidates: string[] = [];
+    if (host.includes('pornhub')) {
+      candidates.push(
+        targetPage === 1
+          ? `${rootParsed.origin}/video/search?search=${encoded}`
+          : `${rootParsed.origin}/video/search?search=${encoded}&page=${targetPage}`
+      );
+    } else if (host.includes('xvideos')) {
+      candidates.push(
+        targetPage === 1
+          ? `${rootParsed.origin}/?k=${encoded}`
+          : `${rootParsed.origin}/?k=${encoded}&p=${targetPage - 1}`
+      );
+    } else if (host.includes('xhamster')) {
+      candidates.push(
+        targetPage === 1
+          ? `${rootParsed.origin}/search/${encoded}`
+          : `${rootParsed.origin}/search/${encoded}?page=${targetPage}`
+      );
+    } else if (host.includes('redtube')) {
+      candidates.push(
+        targetPage === 1
+          ? `${rootParsed.origin}/?search=${encoded}`
+          : `${rootParsed.origin}/?search=${encoded}&page=${targetPage}`
+      );
+    } else if (host.includes('eporner')) {
+      candidates.push(
+        targetPage === 1
+          ? `${rootParsed.origin}/search/${encoded}/`
+          : `${rootParsed.origin}/search/${encoded}/${targetPage}/`
+      );
+    } else if (host.includes('spankbang')) {
+      candidates.push(
+        targetPage === 1
+          ? `${rootParsed.origin}/s/${encoded}/`
+          : `${rootParsed.origin}/s/${encoded}/${targetPage}/`
+      );
+    } else {
+      try {
+        const cookieJar = new Map<string, string>();
+        const res = await fetchWithPortalCookies(rootUrl, cookieJar, 8000);
+        if (res.ok) {
+          let html: string | null = await res.text();
+          let $: cheerio.CheerioAPI | null = cheerio.load(html);
+          $('form').each((_, formEl) => {
+            if (!$) return;
+            const $form = $(formEl);
+            const action = $form.attr('action') || rootUrl;
+            const input = $form.find('input[type="search"], input[name="q"], input[name="s"], input[name="search"], input[name="k"], input[name="query"]').first();
+            const paramName = input.attr('name');
+            if (paramName) {
+              try {
+                const target = new URL(action, rootUrl);
+                target.searchParams.set(paramName, q);
+                if (targetPage > 1) target.searchParams.set('page', String(targetPage));
+                candidates.push(target.toString());
+              } catch {
+                // ignore invalid action
+              }
+            }
+          });
+          try {
+            $.root().empty();
+          } catch {
+            // ignore
+          }
+          $ = null;
+          html = null;
+        }
+      } catch {
+        // ignore form inspection errors
       }
-      if (collected.length > 0) break;
-    } catch {
-      // continue trying next candidate
+
+      if (candidates.length === 0) {
+        const pageSuffix = targetPage > 1 ? `&page=${targetPage}` : '';
+        candidates.push(`${rootParsed.origin}/?s=${encoded}${pageSuffix}`);
+        candidates.push(`${rootParsed.origin}/search?q=${encoded}${pageSuffix}`);
+      }
+    }
+    return candidates;
+  };
+
+  const collected: MediaItem[] = [];
+  let primarySearchUrl = rootUrl;
+  let discoveredNextUrl: string | undefined;
+  let lastLoadedPage = startPage;
+  let pagesFetched = 0;
+
+  for (let offset = 0; offset < batchPages; offset++) {
+    if (options.signal?.aborted) break;
+    const currentPageNum = startPage + offset;
+
+    if (offset > 0) {
+      await sleepWithAbort(randomPageDelayMs(), options.signal);
+      if (options.signal?.aborted) break;
+    }
+
+    const candidates = await buildSearchCandidates(currentPageNum);
+    if (offset === 0 && candidates[0]) {
+      primarySearchUrl = candidates[0];
+    }
+
+    let pageItemsCount = 0;
+    let pageNextUrl: string | undefined;
+
+    for (const searchPageUrl of candidates.slice(0, 2)) {
+      try {
+        const result = await crawlServer({
+          url: searchPageUrl,
+          mode: 'quick',
+          maxPages: 1,
+          maxDepth: 0,
+          localBaseUrl: options.localBaseUrl,
+          signal: options.signal,
+        });
+
+        if (result.nextPageUrl) pageNextUrl = result.nextPageUrl;
+        for (const item of result.items) {
+          collected.push({
+            ...item,
+            category: `Busca: ${q}`,
+            folderPath: `/Busca/${q}`,
+          });
+          pageItemsCount++;
+        }
+        if (pageItemsCount > 0) break;
+      } catch {
+        // continue trying next candidate
+      }
+    }
+
+    if (pageItemsCount === 0 && offset > 0) {
+      discoveredNextUrl = undefined;
+      break;
+    }
+
+    pagesFetched++;
+    lastLoadedPage = currentPageNum;
+    discoveredNextUrl = pageNextUrl;
+
+    if (pageItemsCount === 0) {
+      break;
     }
   }
 
@@ -1712,8 +1991,10 @@ export async function searchServerContent(options: {
   return {
     items: deduped,
     searchUrl: primarySearchUrl,
-    page,
-    hasMore: Boolean(discoveredNextUrl) || deduped.length >= 16,
+    page: lastLoadedPage,
+    nextPage: lastLoadedPage + 1,
+    pagesFetched,
+    hasMore: Boolean(discoveredNextUrl) || (pagesFetched === batchPages && deduped.length >= 16),
     nextPageUrl: discoveredNextUrl,
   };
 }
