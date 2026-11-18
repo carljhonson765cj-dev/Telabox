@@ -6,13 +6,16 @@ import {
   Home,
   Keyboard,
   Loader2,
+  Lock,
   Play,
   Plus,
   RefreshCw,
   Search,
   Server,
+  Shield,
   Star,
   Tv,
+  Unlock,
   X,
 } from 'lucide-react';
 import type {
@@ -33,6 +36,7 @@ import { ServerConnectPanel } from './components/ServerConnectPanel';
 import { OnScreenKeyboard } from './components/OnScreenKeyboard';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
+import { PinLockOverlay, type PinOverlayMode } from './components/PinLockOverlay';
 import { fetchJson } from './utils/safeFetch';
 import { canonicalizeMediaUrl, deduplicateMediaItems, normalizeMediaTitle } from './utils/dedupeMedia';
 import tvCinemaBackdrop from './assets/images/tv_cinema_backdrop_1794706797783.jpg';
@@ -46,6 +50,7 @@ const STORAGE_ACTIVE_ID_KEY = 'telabox_active_server_v1';
 const STORAGE_FAVORITES_KEY = 'telabox_favorites_v1';
 const STORAGE_PROGRESS_KEY = 'telabox_watch_progress_v1';
 const STORAGE_RECENT_SEARCHES_KEY = 'telabox_recent_searches_v1';
+const STORAGE_PIN_KEY = 'telabox_pin_lock_v1';
 
 function loadJson<T>(key: string, fallback: T): T {
   try {
@@ -91,11 +96,22 @@ export default function App() {
     serverId: string;
     items: MediaItem[];
     page: number;
+    nextPage: number;
+    pagesFetched: number;
     hasMore: boolean;
     error: string | null;
   } | null>(null);
   const [browsingMore, setBrowsingMore] = useState(false);
   const [browseError, setBrowseError] = useState<string | null>(null);
+  const [batchFeedback, setBatchFeedback] = useState<string | null>(null);
+  const [autoInfiniteScroll, setAutoInfiniteScroll] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('telabox_infinite_scroll_v1');
+      return saved === null ? true : saved === 'true';
+    } catch {
+      return true;
+    }
+  });
   const [refreshingLatest, setRefreshingLatest] = useState(false);
   const [newUpdatesNotice, setNewUpdatesNotice] = useState<{
     count: number;
@@ -106,6 +122,25 @@ export default function App() {
   );
   const [showSearchKeyboard, setShowSearchKeyboard] = useState(false);
   const [showVirtualRemote, setShowVirtualRemote] = useState(false);
+  const [pinCode, setPinCode] = useState<string | null>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_PIN_KEY);
+      return saved && /^\d{4}$/.test(saved) ? saved : null;
+    } catch {
+      return null;
+    }
+  });
+  const [isAppUnlocked, setIsAppUnlocked] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_PIN_KEY);
+      return !(saved && /^\d{4}$/.test(saved));
+    } catch {
+      return true;
+    }
+  });
+  const [pinModalMode, setPinModalMode] = useState<Exclude<PinOverlayMode, 'unlock'> | null>(null);
+  const [showPinQuickMenu, setShowPinQuickMenu] = useState(false);
+  const pinQuickMenuCloseRef = useRef<HTMLButtonElement>(null);
   const [clockText, setClockText] = useState(() =>
     new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
   );
@@ -119,10 +154,13 @@ export default function App() {
   // Live SSE scan state
   const eventSourceRef = useRef<EventSource | null>(null);
   const liveItemsRef = useRef<MediaItem[]>([]);
+  const browseSentinelRef = useRef<HTMLDivElement | null>(null);
+  const searchSentinelRef = useRef<HTMLDivElement | null>(null);
+  const lastAutoTriggerRef = useRef<number>(0);
   const [scanStatus, setScanStatus] = useState({
     scanning: false,
     pagesScanned: 0,
-    maxPages: 45,
+    maxPages: 5,
     foldersFound: 0,
     itemsFound: 0,
     currentUrl: '',
@@ -167,6 +205,26 @@ export default function App() {
     localStorage.setItem(STORAGE_RECENT_SEARCHES_KEY, JSON.stringify(recentSearches));
   }, [recentSearches]);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem('telabox_infinite_scroll_v1', String(autoInfiniteScroll));
+    } catch {
+      // ignore storage errors
+    }
+  }, [autoInfiniteScroll]);
+
+  useEffect(() => {
+    try {
+      if (pinCode) {
+        localStorage.setItem(STORAGE_PIN_KEY, pinCode);
+      } else {
+        localStorage.removeItem(STORAGE_PIN_KEY);
+      }
+    } catch {
+      // ignore storage errors
+    }
+  }, [pinCode]);
+
   // Real-time TV clock
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -188,6 +246,17 @@ export default function App() {
   );
 
   const handleBack = useCallback(() => {
+    if (pinCode && !isAppUnlocked) {
+      return;
+    }
+    if (showPinQuickMenu) {
+      setShowPinQuickMenu(false);
+      return;
+    }
+    if (pinModalMode) {
+      setPinModalMode(null);
+      return;
+    }
     if (playerState) {
       setPlayerState(null);
       return;
@@ -203,7 +272,7 @@ export default function App() {
     if (activeTab !== 'home' && activeServer) {
       setActiveTab('home');
     }
-  }, [playerState, showSearchKeyboard, selectedCategory, activeTab, activeServer]);
+  }, [pinCode, isAppUnlocked, showPinQuickMenu, pinModalMode, playerState, showSearchKeyboard, selectedCategory, activeTab, activeServer]);
 
   const { moveFocus, activateFocused, focusFirstVisible } = useDpadNavigation({
     enabled: true,
@@ -220,7 +289,14 @@ export default function App() {
       const t = window.setTimeout(() => focusFirstVisible(), 50);
       return () => window.clearTimeout(t);
     }
-  }, [activeTab, playerState, activeServer?.id, focusFirstVisible]);
+  }, [activeTab, playerState, activeServer?.id, isAppUnlocked, pinModalMode, showPinQuickMenu, focusFirstVisible]);
+
+  useEffect(() => {
+    if (showPinQuickMenu) {
+      const t = window.setTimeout(() => pinQuickMenuCloseRef.current?.focus(), 40);
+      return () => window.clearTimeout(t);
+    }
+  }, [showPinQuickMenu]);
 
   const finalizeLiveServer = useCallback(
     (
@@ -319,8 +395,8 @@ export default function App() {
       liveItemsRef.current = [];
       pendingScanMetaRef.current = { url, customName, mode, useProxy };
 
-      const maxPages = mode === 'quick' ? 1 : 25;
-      const maxDepth = mode === 'quick' ? 0 : 2;
+      const maxPages = mode === 'quick' ? 1 : 5;
+      const maxDepth = mode === 'quick' ? 0 : 1;
 
       setScanStatus({
         scanning: true,
@@ -436,6 +512,72 @@ export default function App() {
     [activeServerId]
   );
 
+  const handleImportBackup = useCallback(
+    (payload: { servers: ServerProfile[]; favorites: MediaItem[] }) => {
+      let serversAdded = 0;
+      let serversUpdated = 0;
+
+      const nextServers = [...savedServers];
+      for (const incoming of payload.servers) {
+        const matchIdx = nextServers.findIndex(
+          (existing) =>
+            existing.id === incoming.id ||
+            existing.url.replace(/\/+$/, '').toLowerCase() ===
+              incoming.url.replace(/\/+$/, '').toLowerCase()
+        );
+        if (matchIdx >= 0) {
+          const existing = nextServers[matchIdx];
+          const mergedItems = deduplicateMediaItems([...existing.items, ...incoming.items]);
+          const mergedCategories = Array.from(
+            new Set([
+              ...existing.categories,
+              ...incoming.categories,
+              ...mergedItems.map((i) => i.category),
+            ])
+          ).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+
+          nextServers[matchIdx] = {
+            ...existing,
+            ...incoming,
+            id: existing.id,
+            items: mergedItems,
+            categories: mergedCategories,
+            categorySources: {
+              ...(existing.categorySources || {}),
+              ...(incoming.categorySources || {}),
+            },
+          };
+          serversUpdated += 1;
+        } else {
+          nextServers.push(incoming);
+          serversAdded += 1;
+        }
+      }
+
+      const existingFavKeys = new Set(favorites.map((f) => canonicalizeMediaUrl(f.url) || f.id));
+      let favoritesAdded = 0;
+      for (const fav of payload.favorites) {
+        const key = canonicalizeMediaUrl(fav.url) || fav.id;
+        if (!existingFavKeys.has(key)) {
+          existingFavKeys.add(key);
+          favoritesAdded += 1;
+        }
+      }
+      const nextFavorites = deduplicateMediaItems([...favorites, ...payload.favorites], {
+        acrossCategories: true,
+      });
+
+      setSavedServers(nextServers);
+      setFavorites(nextFavorites);
+      if (!activeServerId && nextServers.length > 0) {
+        setActiveServerId(nextServers[0].id);
+      }
+
+      return { serversAdded, serversUpdated, favoritesAdded };
+    },
+    [savedServers, favorites, activeServerId]
+  );
+
   // Catalog derivations for active server
   const continueWatchingItems = useMemo(() => {
     if (!activeServer) return [];
@@ -522,7 +664,7 @@ export default function App() {
   }, [activeServer]);
 
   const loadMoreFromServer = useCallback(
-    async (targetCat?: string) => {
+    async (targetCat?: string, batchPages = 4) => {
       if (!activeServer || browsingMore) return;
       const cat = targetCat ?? selectedCategory;
 
@@ -540,14 +682,19 @@ export default function App() {
       if (!targetUrl) return;
       setBrowsingMore(true);
       setBrowseError(null);
+      setBatchFeedback(null);
 
       try {
-        const qs = new URLSearchParams({ url: targetUrl });
+        const qs = new URLSearchParams({
+          url: targetUrl,
+          pages: String(Math.min(Math.max(batchPages, 1), 5)),
+        });
         if (categoryParam) qs.set('category', categoryParam);
 
         const { ok, data } = await fetchJson<{
           items?: MediaItem[];
           nextPageUrl?: string;
+          pagesFetched?: number;
           categorySources?: Record<string, CategorySource>;
           error?: string;
         }>(`/api/browse?${qs.toString()}`);
@@ -557,12 +704,19 @@ export default function App() {
         }
 
         const fetchedItems = Array.isArray(data.items) ? data.items : [];
+        const pagesFetched = Math.max(1, Number(data.pagesFetched) || 1);
         const serverId = activeServer.id;
+        const previousCount = activeServer.items.length;
+
+        let addedCount = 0;
 
         setSavedServers((prev) =>
           prev.map((srv) => {
             if (srv.id !== serverId) return srv;
             const mergedItems = deduplicateMediaItems([...srv.items, ...fetchedItems]);
+            addedCount = Math.max(0, mergedItems.length - srv.items.length);
+            const hasMoreNewItems = fetchedItems.length > 0 && addedCount > 0;
+            const effectiveNextUrl = hasMoreNewItems ? data.nextPageUrl : undefined;
             const mergedCats = Array.from(new Set(mergedItems.map((i) => i.category))).sort((a, b) =>
               a.localeCompare(b, 'pt-BR')
             );
@@ -579,23 +733,31 @@ export default function App() {
             if (categoryParam && nextSources[categoryParam]) {
               nextSources[categoryParam] = {
                 ...nextSources[categoryParam],
-                nextPageUrl: data.nextPageUrl,
-                pageLoaded: (nextSources[categoryParam].pageLoaded || 0) + 1,
+                nextPageUrl: effectiveNextUrl,
+                pageLoaded: (nextSources[categoryParam].pageLoaded || 0) + pagesFetched,
               };
             }
             return {
               ...srv,
               items: mergedItems,
               categories: mergedCats,
-              pagesScanned: srv.pagesScanned + 1,
-              nextPageUrl: !categoryParam ? data.nextPageUrl : srv.nextPageUrl,
+              pagesScanned: srv.pagesScanned + pagesFetched,
+              nextPageUrl: !categoryParam ? effectiveNextUrl : srv.nextPageUrl,
               categorySources: Object.keys(nextSources).length > 0 ? nextSources : srv.categorySources,
             };
           })
         );
+
+        if (addedCount > 0 || previousCount >= 0) {
+          setBatchFeedback(
+            addedCount > 0
+              ? `+${pagesFetched} ${pagesFetched === 1 ? 'página carregada' : 'páginas carregadas'} · +${addedCount} vídeos novos`
+              : `Fim das páginas novas (${pagesFetched} ${pagesFetched === 1 ? 'página verificada' : 'páginas verificadas'})`
+          );
+        }
       } catch (err) {
         setBrowseError(
-          err instanceof Error ? err.message : 'Erro ao buscar próxima página do site.'
+          err instanceof Error ? err.message : 'Erro ao buscar próximo lote de páginas.'
         );
       } finally {
         setBrowsingMore(false);
@@ -747,66 +909,80 @@ export default function App() {
     (cat: string) => {
       setSelectedCategory(cat);
       setBrowseError(null);
+      setBatchFeedback(null);
       if (
         cat !== 'Tudo' &&
         activeServer &&
         (categoryCounts.get(cat) || 0) === 0 &&
         activeServer.categorySources?.[cat]
       ) {
-        void loadMoreFromServer(cat);
+        void loadMoreFromServer(cat, 4);
       }
     },
     [activeServer, categoryCounts, loadMoreFromServer]
   );
 
   const runRemoteSearch = useCallback(
-    async (explicitQuery?: string, page = 1) => {
+    async (explicitQuery?: string, startPage = 1, batchPages = 3) => {
       const term = (explicitQuery ?? searchQuery).trim();
-      if (!term || !activeServer) return;
+      if (!term || !activeServer || remoteSearching) return;
       if (explicitQuery !== undefined) {
         setSearchQuery(term);
       }
       setShowSearchKeyboard(false);
-      if (page === 1) {
+      if (startPage === 1) {
         setRecentSearches((prev) =>
           [term, ...prev.filter((t) => t.toLowerCase() !== term.toLowerCase())].slice(0, 8)
         );
       }
       setRemoteSearching(true);
-      if (page === 1) {
+      if (startPage === 1) {
         setRemoteSearchResults({
           query: term,
           serverId: activeServer.id,
           items: [],
           page: 1,
+          nextPage: 4,
+          pagesFetched: 0,
           hasMore: false,
           error: null,
         });
       }
 
       try {
+        const safePages = Math.min(Math.max(batchPages, 1), 5);
         const { ok, data } = await fetchJson<{
           items?: MediaItem[];
           page?: number;
+          nextPage?: number;
+          pagesFetched?: number;
           hasMore?: boolean;
           error?: string;
         }>(
-          `/api/search?serverUrl=${encodeURIComponent(activeServer.url)}&query=${encodeURIComponent(term)}&page=${page}`
+          `/api/search?serverUrl=${encodeURIComponent(activeServer.url)}&query=${encodeURIComponent(term)}&page=${startPage}&pages=${safePages}`
         );
         if (!ok) {
           throw new Error(data.error || 'Falha ao buscar no servidor.');
         }
         const items: MediaItem[] = Array.isArray(data.items) ? data.items : [];
+        const loadedPage = data.page || startPage;
+        const nextPage = data.nextPage || loadedPage + 1;
+        const batchCount = data.pagesFetched || 1;
         setRemoteSearchResults((prev) => {
-          const prevItems =
-            page > 1 && prev && prev.query.toLowerCase() === term.toLowerCase() && prev.serverId === activeServer.id
-              ? prev.items
-              : [];
+          const sameSearch =
+            startPage > 1 &&
+            prev &&
+            prev.query.toLowerCase() === term.toLowerCase() &&
+            prev.serverId === activeServer.id;
+          const prevItems = sameSearch ? prev.items : [];
+          const prevPagesFetched = sameSearch ? prev.pagesFetched : 0;
           return {
             query: term,
             serverId: activeServer.id,
             items: deduplicateMediaItems([...prevItems, ...items], { acrossCategories: true }),
-            page: data.page || page,
+            page: loadedPage,
+            nextPage,
+            pagesFetched: prevPagesFetched + batchCount,
             hasMore: Boolean(data.hasMore) && items.length > 0,
             error: null,
           };
@@ -815,8 +991,10 @@ export default function App() {
         setRemoteSearchResults((prev) => ({
           query: term,
           serverId: activeServer.id,
-          items: page > 1 && prev ? prev.items : [],
-          page,
+          items: startPage > 1 && prev ? prev.items : [],
+          page: startPage,
+          nextPage: startPage + 1,
+          pagesFetched: prev?.pagesFetched || 0,
           hasMore: false,
           error: err instanceof Error ? err.message : 'Erro ao pesquisar conteúdo no servidor.',
         }));
@@ -824,8 +1002,72 @@ export default function App() {
         setRemoteSearching(false);
       }
     },
-    [searchQuery, activeServer]
+    [searchQuery, activeServer, remoteSearching]
   );
+
+  // Automatic infinite scroll for Home (All / Category) & Search sentinels
+  useEffect(() => {
+    if (!autoInfiniteScroll || playerState || scanStatus.scanning) return;
+
+    const targetEl =
+      activeTab === 'home'
+        ? browseSentinelRef.current
+        : activeTab === 'search'
+        ? searchSentinelRef.current
+        : null;
+
+    if (!targetEl) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (!entry?.isIntersecting) return;
+        const now = Date.now();
+        if (now - lastAutoTriggerRef.current < 1500) return;
+
+        if (activeTab === 'home' && activeServer && !browsingMore && !browseError) {
+          const canLoadMoreHome =
+            selectedCategory === 'Tudo'
+              ? Boolean(activeServer.nextPageUrl)
+              : activeServer.categorySources?.[selectedCategory]?.pageLoaded === 0 ||
+                Boolean(activeServer.categorySources?.[selectedCategory]?.nextPageUrl);
+
+          if (canLoadMoreHome) {
+            lastAutoTriggerRef.current = now;
+            void loadMoreFromServer(selectedCategory, 4);
+          }
+        } else if (
+          activeTab === 'search' &&
+          activeServer &&
+          !remoteSearching &&
+          !remoteSearchResults?.error &&
+          remoteSearchResults?.hasMore &&
+          remoteSearchResults.query.toLowerCase() === searchQuery.trim().toLowerCase()
+        ) {
+          lastAutoTriggerRef.current = now;
+          void runRemoteSearch(searchQuery.trim(), remoteSearchResults.nextPage, 3);
+        }
+      },
+      { rootMargin: '260px', threshold: 0.05 }
+    );
+
+    observer.observe(targetEl);
+    return () => observer.disconnect();
+  }, [
+    autoInfiniteScroll,
+    playerState,
+    scanStatus.scanning,
+    activeTab,
+    activeServer,
+    selectedCategory,
+    browsingMore,
+    browseError,
+    loadMoreFromServer,
+    remoteSearching,
+    remoteSearchResults,
+    searchQuery,
+    runRemoteSearch,
+  ]);
 
   const searchResults = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -972,7 +1214,7 @@ export default function App() {
       {/* Main TV Stage */}
       <div className="flex-1 min-w-0 flex flex-col">
         {/* Minimal 10-Foot Top Strip */}
-        <header className="px-6 lg:px-10 py-4 border-b border-white/8 flex items-center justify-between gap-6">
+        <header className="px-6 lg:px-10 py-4 border-b border-white/8 flex flex-wrap items-center justify-between gap-4">
           <div className="min-w-0">
             {activeServer ? (
               <div className="flex items-center gap-3 min-w-0">
@@ -990,7 +1232,7 @@ export default function App() {
             )}
           </div>
 
-          <div className="flex items-center gap-3 shrink-0">
+          <div className="flex flex-wrap items-center gap-2.5 sm:gap-3 shrink-0">
             {activeServer && (
               <button
                 type="button"
@@ -1015,6 +1257,30 @@ export default function App() {
               </button>
             )}
             <PWAInstallButton />
+            <button
+              type="button"
+              data-tv-focusable="true"
+              onClick={() => {
+                if (pinCode) {
+                  setShowPinQuickMenu(true);
+                } else {
+                  setPinModalMode('setup');
+                }
+              }}
+              className={`h-10 px-4 rounded-xl border text-xs font-medium flex items-center gap-2 whitespace-nowrap shrink-0 transition-colors ${
+                pinCode
+                  ? 'bg-emerald-500/15 hover:bg-emerald-500/25 border-emerald-400/35 text-emerald-200'
+                  : 'bg-white/8 hover:bg-white/15 border-white/10 text-white'
+              }`}
+              title={
+                pinCode
+                  ? 'PIN de 4 dígitos ativo — alterar, desativar ou bloquear'
+                  : 'Ativar bloqueio por PIN de 4 dígitos'
+              }
+            >
+              <Lock className={`w-4 h-4 ${pinCode ? 'text-emerald-300' : 'text-sky-400'}`} />
+              <span>Bloqueio PIN</span>
+            </button>
             <button
               type="button"
               data-tv-focusable="true"
@@ -1225,23 +1491,43 @@ export default function App() {
                   ))}
 
                   {activeServer.nextPageUrl && (
-                    <div className="pt-4 flex justify-center">
-                      <button
-                        type="button"
-                        data-tv-focusable="true"
-                        disabled={browsingMore}
-                        onClick={() => loadMoreFromServer('Tudo')}
-                        className="h-12 px-7 rounded-xl bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-slate-950 font-display font-bold text-sm flex items-center gap-2.5 whitespace-nowrap"
-                      >
-                        {browsingMore ? (
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                        ) : (
-                          <Globe className="w-4 h-4" />
-                        )}
-                        {browsingMore
-                          ? 'Carregando mais vídeos do site...'
-                          : 'Carregar Mais Vídeos da Página Principal do Site'}
-                      </button>
+                    <div className="pt-4 flex flex-col items-center gap-3">
+                      {batchFeedback && (
+                        <p className="text-xs font-mono text-sky-300/90 tabular-nums">
+                          {batchFeedback} · {activeServer.pagesScanned} páginas carregadas no total
+                        </p>
+                      )}
+                      <div className="flex flex-wrap items-center justify-center gap-3">
+                        <button
+                          type="button"
+                          data-tv-focusable="true"
+                          disabled={browsingMore}
+                          onClick={() => loadMoreFromServer('Tudo', 4)}
+                          className="h-12 px-7 rounded-xl bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-slate-950 font-display font-bold text-sm flex items-center gap-2.5 whitespace-nowrap"
+                        >
+                          {browsingMore ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Globe className="w-4 h-4" />
+                          )}
+                          {browsingMore
+                            ? 'Buscando lote de páginas...'
+                            : 'Carregar mais páginas (+4)'}
+                        </button>
+                        <button
+                          type="button"
+                          data-tv-focusable="true"
+                          onClick={() => setAutoInfiniteScroll((v) => !v)}
+                          className={`h-12 px-4 rounded-xl border text-xs font-medium whitespace-nowrap transition-colors ${
+                            autoInfiniteScroll
+                              ? 'bg-emerald-500/15 border-emerald-400/40 text-emerald-300'
+                              : 'bg-[#12151E] border-white/10 text-slate-300 hover:text-white'
+                          }`}
+                        >
+                          Rolagem Infinita: {autoInfiniteScroll ? 'Ativa' : 'Manual'}
+                        </button>
+                      </div>
+                      <div ref={browseSentinelRef} className="h-4 w-full" aria-hidden="true" />
                     </div>
                   )}
                 </div>
@@ -1265,7 +1551,7 @@ export default function App() {
                         <div className="flex flex-col items-center gap-3">
                           <Loader2 className="w-8 h-8 text-sky-400 animate-spin" />
                           <p className="text-base text-slate-200">
-                            Carregando vídeos de "{selectedCategory}" direto do site...
+                            Carregando lote de páginas de "{selectedCategory}" direto do site...
                           </p>
                         </div>
                       ) : (
@@ -1278,23 +1564,43 @@ export default function App() {
 
                   {(activeServer.categorySources?.[selectedCategory]?.pageLoaded === 0 ||
                     Boolean(activeServer.categorySources?.[selectedCategory]?.nextPageUrl)) && (
-                    <div className="pt-2 flex justify-center">
-                      <button
-                        type="button"
-                        data-tv-focusable="true"
-                        disabled={browsingMore}
-                        onClick={() => loadMoreFromServer(selectedCategory)}
-                        className="h-12 px-7 rounded-xl bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-slate-950 font-display font-bold text-sm flex items-center gap-2.5 whitespace-nowrap"
-                      >
-                        {browsingMore ? (
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                        ) : (
-                          <Plus className="w-4 h-4" />
-                        )}
-                        {browsingMore
-                          ? `Carregando ${selectedCategory}...`
-                          : `Carregar Página ${(activeServer.categorySources?.[selectedCategory]?.pageLoaded || 0) + 1} de ${selectedCategory}`}
-                      </button>
+                    <div className="pt-2 flex flex-col items-center gap-3">
+                      {batchFeedback && (
+                        <p className="text-xs font-mono text-sky-300/90 tabular-nums">
+                          {batchFeedback}
+                        </p>
+                      )}
+                      <div className="flex flex-wrap items-center justify-center gap-3">
+                        <button
+                          type="button"
+                          data-tv-focusable="true"
+                          disabled={browsingMore}
+                          onClick={() => loadMoreFromServer(selectedCategory, 4)}
+                          className="h-12 px-7 rounded-xl bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-slate-950 font-display font-bold text-sm flex items-center gap-2.5 whitespace-nowrap"
+                        >
+                          {browsingMore ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Plus className="w-4 h-4" />
+                          )}
+                          {browsingMore
+                            ? `Buscando páginas de ${selectedCategory}...`
+                            : `Carregar mais páginas (+4) · pág. ${(activeServer.categorySources?.[selectedCategory]?.pageLoaded || 0) + 1}–${(activeServer.categorySources?.[selectedCategory]?.pageLoaded || 0) + 4}`}
+                        </button>
+                        <button
+                          type="button"
+                          data-tv-focusable="true"
+                          onClick={() => setAutoInfiniteScroll((v) => !v)}
+                          className={`h-12 px-4 rounded-xl border text-xs font-medium whitespace-nowrap transition-colors ${
+                            autoInfiniteScroll
+                              ? 'bg-emerald-500/15 border-emerald-400/40 text-emerald-300'
+                              : 'bg-[#12151E] border-white/10 text-slate-300 hover:text-white'
+                          }`}
+                        >
+                          Rolagem Infinita: {autoInfiniteScroll ? 'Ativa' : 'Manual'}
+                        </button>
+                      </div>
+                      <div ref={browseSentinelRef} className="h-4 w-full" aria-hidden="true" />
                     </div>
                   )}
                 </section>
@@ -1306,8 +1612,16 @@ export default function App() {
           {activeTab === 'servers' && (
             <ServerConnectPanel
               savedServers={savedServers}
+              favorites={favorites}
               activeServerId={activeServer?.id || null}
               scanStatus={scanStatus}
+              pinEnabled={Boolean(pinCode)}
+              onConfigurePin={(mode) => setPinModalMode(mode)}
+              onLockNow={() => {
+                setPlayerState(null);
+                setIsAppUnlocked(false);
+              }}
+              onImportBackup={handleImportBackup}
               onStartScan={startServerScan}
               onStopScan={stopServerScan}
               onSelectServer={(id) => {
@@ -1535,25 +1849,40 @@ export default function App() {
                       remoteSearchResults &&
                       remoteSearchResults.query.toLowerCase() === searchQuery.trim().toLowerCase() &&
                       remoteSearchResults.hasMore && (
-                        <div className="pt-2 flex justify-center">
-                          <button
-                            type="button"
-                            data-tv-focusable="true"
-                            disabled={remoteSearching}
-                            onClick={() =>
-                              runRemoteSearch(searchQuery.trim(), remoteSearchResults.page + 1)
-                            }
-                            className="h-12 px-7 rounded-xl bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-slate-950 font-display font-bold text-sm flex items-center gap-2.5 whitespace-nowrap"
-                          >
-                            {remoteSearching ? (
-                              <Loader2 className="w-4 h-4 animate-spin" />
-                            ) : (
-                              <Plus className="w-4 h-4" />
-                            )}
-                            {remoteSearching
-                              ? 'Carregando mais resultados...'
-                              : `Carregar Página ${remoteSearchResults.page + 1} da Busca no Site`}
-                          </button>
+                        <div className="pt-2 flex flex-col items-center gap-3">
+                          <div className="flex flex-wrap items-center justify-center gap-3">
+                            <button
+                              type="button"
+                              data-tv-focusable="true"
+                              disabled={remoteSearching}
+                              onClick={() =>
+                                runRemoteSearch(searchQuery.trim(), remoteSearchResults.nextPage, 3)
+                              }
+                              className="h-12 px-7 rounded-xl bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-slate-950 font-display font-bold text-sm flex items-center gap-2.5 whitespace-nowrap"
+                            >
+                              {remoteSearching ? (
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                              ) : (
+                                <Plus className="w-4 h-4" />
+                              )}
+                              {remoteSearching
+                                ? 'Buscando mais páginas...'
+                                : `Carregar mais páginas (+3) · pág. ${remoteSearchResults.nextPage}–${remoteSearchResults.nextPage + 2}`}
+                            </button>
+                            <button
+                              type="button"
+                              data-tv-focusable="true"
+                              onClick={() => setAutoInfiniteScroll((v) => !v)}
+                              className={`h-12 px-4 rounded-xl border text-xs font-medium whitespace-nowrap transition-colors ${
+                                autoInfiniteScroll
+                                  ? 'bg-emerald-500/15 border-emerald-400/40 text-emerald-300'
+                                  : 'bg-[#12151E] border-white/10 text-slate-300 hover:text-white'
+                              }`}
+                            >
+                              Rolagem Infinita: {autoInfiniteScroll ? 'Ativa' : 'Manual'}
+                            </button>
+                          </div>
+                          <div ref={searchSentinelRef} className="h-4 w-full" aria-hidden="true" />
                         </div>
                       )}
                   </div>
@@ -1670,6 +1999,107 @@ export default function App() {
           onClose={() => setPlayerState(null)}
         />
       )}
+
+      {/* Quick PIN Actions Modal (from Header 'Bloqueio PIN' when active) */}
+      {showPinQuickMenu && pinCode && (
+        <div
+          data-tv-scope="modal"
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+        >
+          <div className="w-full max-w-sm rounded-2xl bg-[#12151E] border border-white/15 p-6 shadow-2xl space-y-4">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-emerald-500/15 border border-emerald-400/35 text-emerald-300 flex items-center justify-center shrink-0">
+                  <Lock className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-display text-lg font-bold text-white">
+                    Bloqueio PIN Ativo
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    Escolha uma opção para sua senha de 4 dígitos.
+                  </p>
+                </div>
+              </div>
+              <button
+                ref={pinQuickMenuCloseRef}
+                type="button"
+                data-tv-focusable="true"
+                onClick={() => setShowPinQuickMenu(false)}
+                className="w-9 h-9 rounded-xl bg-white/10 hover:bg-white/20 text-slate-300 flex items-center justify-center shrink-0"
+                aria-label="Fechar"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-2.5 pt-1">
+              <button
+                type="button"
+                data-tv-focusable="true"
+                onClick={() => {
+                  setShowPinQuickMenu(false);
+                  setPinModalMode('change');
+                }}
+                className="w-full h-12 px-4 rounded-xl bg-white text-[#090A0F] hover:bg-slate-200 font-semibold text-sm flex items-center justify-center gap-2 whitespace-nowrap"
+              >
+                <Shield className="w-4 h-4" />
+                Alterar PIN de 4 Dígitos
+              </button>
+              <button
+                type="button"
+                data-tv-focusable="true"
+                onClick={() => {
+                  setShowPinQuickMenu(false);
+                  setPlayerState(null);
+                  setIsAppUnlocked(false);
+                }}
+                className="w-full h-12 px-4 rounded-xl bg-white/10 hover:bg-white/20 text-white font-medium text-sm flex items-center justify-center gap-2 whitespace-nowrap"
+              >
+                <Lock className="w-4 h-4 text-sky-400" />
+                Bloquear Tela Agora
+              </button>
+              <button
+                type="button"
+                data-tv-focusable="true"
+                onClick={() => {
+                  setShowPinQuickMenu(false);
+                  setPinModalMode('disable');
+                }}
+                className="w-full h-12 px-4 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-400/35 text-rose-200 font-medium text-sm flex items-center justify-center gap-2 whitespace-nowrap"
+              >
+                <Unlock className="w-4 h-4" />
+                Desativar Bloqueio PIN
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 4-Digit PIN Lock / Configuration Overlay */}
+      {pinCode && !isAppUnlocked ? (
+        <PinLockOverlay
+          mode="unlock"
+          expectedPin={pinCode}
+          onUnlock={() => setIsAppUnlocked(true)}
+        />
+      ) : pinModalMode ? (
+        <PinLockOverlay
+          mode={pinModalMode}
+          expectedPin={pinCode}
+          onSavePin={(newPin) => {
+            setPinCode(newPin);
+            setIsAppUnlocked(true);
+            setPinModalMode(null);
+          }}
+          onDisablePin={() => {
+            setPinCode(null);
+            setIsAppUnlocked(true);
+            setPinModalMode(null);
+          }}
+          onCancel={() => setPinModalMode(null)}
+        />
+      ) : null}
     </div>
   );
 }
