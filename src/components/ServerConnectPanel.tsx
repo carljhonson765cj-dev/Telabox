@@ -1,17 +1,28 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
+  Check,
+  ClipboardPaste,
+  Copy,
+  Download,
+  FileJson,
   FolderSearch,
   Globe,
   Keyboard,
+  Lock,
   Play,
   RefreshCw,
   Server,
+  Shield,
   Square,
   Trash2,
   Tv,
+  Unlock,
+  Upload,
+  X,
 } from 'lucide-react';
-import type { ScanMode, ServerProfile } from '../types/media';
+import type { MediaItem, ScanMode, ServerProfile } from '../types/media';
 import { OnScreenKeyboard } from './OnScreenKeyboard';
+import { buildBackupJson, parseBackupJson } from '../utils/backup';
 import posterFilmsImg from '../assets/images/tv_poster_films_1794706797471.jpg';
 import posterDocsImg from '../assets/images/tv_poster_docs_1794706797194.jpg';
 
@@ -28,8 +39,16 @@ interface ScanStatus {
 
 interface ServerConnectPanelProps {
   savedServers: ServerProfile[];
+  favorites: MediaItem[];
   activeServerId: string | null;
   scanStatus: ScanStatus;
+  pinEnabled: boolean;
+  onConfigurePin: (mode: 'setup' | 'change' | 'disable') => void;
+  onLockNow: () => void;
+  onImportBackup: (payload: {
+    servers: ServerProfile[];
+    favorites: MediaItem[];
+  }) => { serversAdded: number; serversUpdated: number; favoritesAdded: number };
   onStartScan: (options: {
     url: string;
     customName?: string;
@@ -82,8 +101,13 @@ const QUICK_SERVERS = [
 
 export function ServerConnectPanel({
   savedServers,
+  favorites,
   activeServerId,
   scanStatus,
+  pinEnabled,
+  onConfigurePin,
+  onLockNow,
+  onImportBackup,
   onStartScan,
   onStopScan,
   onSelectServer,
@@ -95,6 +119,140 @@ export function ServerConnectPanel({
   const [mode, setMode] = useState<ScanMode>('full');
   const [useProxy, setUseProxy] = useState(true);
   const [showKeyboard, setShowKeyboard] = useState(false);
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const backupModalCloseRef = useRef<HTMLButtonElement>(null);
+  const [backupModalMode, setBackupModalMode] = useState<'export' | 'import' | null>(null);
+  const [backupText, setBackupText] = useState('');
+  const [copiedBackup, setCopiedBackup] = useState(false);
+  const [backupFeedback, setBackupFeedback] = useState<{
+    type: 'success' | 'error';
+    message: string;
+  } | null>(null);
+
+  useEffect(() => {
+    if (backupModalMode) {
+      const t = window.setTimeout(() => backupModalCloseRef.current?.focus(), 40);
+      return () => window.clearTimeout(t);
+    }
+  }, [backupModalMode]);
+
+  useEffect(() => {
+    if (!backupModalMode) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (
+        e.key === 'Escape' ||
+        e.key === 'Back' ||
+        e.key === 'BrowserBack' ||
+        e.key === 'GoBack' ||
+        e.key === 'XF86Back' ||
+        e.keyCode === 4
+      ) {
+        e.preventDefault();
+        e.stopPropagation();
+        setBackupModalMode(null);
+      }
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [backupModalMode]);
+
+  const handleDownloadBackupFile = () => {
+    const json = buildBackupJson(savedServers, favorites);
+    const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
+    const downloadUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    const dateStamp = new Date().toISOString().slice(0, 10);
+    anchor.href = downloadUrl;
+    anchor.download = `telabox-backup-${dateStamp}.json`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(downloadUrl);
+    setBackupFeedback({
+      type: 'success',
+      message: `Backup exportado com ${savedServers.length} servidor(es) e ${favorites.length} favorito(s).`,
+    });
+  };
+
+  const handleOpenExportText = () => {
+    setBackupText(buildBackupJson(savedServers, favorites));
+    setCopiedBackup(false);
+    setBackupFeedback(null);
+    setBackupModalMode('export');
+  };
+
+  const handleOpenImportText = () => {
+    setBackupText('');
+    setCopiedBackup(false);
+    setBackupFeedback(null);
+    setBackupModalMode('import');
+  };
+
+  const handleCopyBackupText = async () => {
+    try {
+      await navigator.clipboard.writeText(backupText);
+      setCopiedBackup(true);
+      window.setTimeout(() => setCopiedBackup(false), 2200);
+    } catch {
+      setBackupFeedback({
+        type: 'error',
+        message: 'Não foi possível copiar automaticamente. Selecione o texto abaixo e copie manualmente.',
+      });
+    }
+  };
+
+  const handlePasteFromClipboard = async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) {
+        setBackupText(text);
+        setBackupFeedback(null);
+      }
+    } catch {
+      setBackupFeedback({
+        type: 'error',
+        message: 'Acesso à área de transferência bloqueado. Cole o texto manualmente na caixa abaixo.',
+      });
+    }
+  };
+
+  const applyImportedText = (rawText: string, closeModalOnSuccess: boolean) => {
+    try {
+      const parsed = parseBackupJson(rawText);
+      const result = onImportBackup(parsed);
+      setBackupFeedback({
+        type: 'success',
+        message: `Backup importado: ${result.serversAdded} servidor(es) novo(s), ${result.serversUpdated} atualizado(s) e ${result.favoritesAdded} favorito(s) adicionado(s).`,
+      });
+      if (closeModalOnSuccess) {
+        setBackupModalMode(null);
+      }
+    } catch (err) {
+      setBackupFeedback({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Erro ao importar backup.',
+      });
+    }
+  };
+
+  const handleBackupFileSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = typeof reader.result === 'string' ? reader.result : '';
+      applyImportedText(text, false);
+    };
+    reader.onerror = () => {
+      setBackupFeedback({
+        type: 'error',
+        message: 'Não foi possível ler o arquivo selecionado.',
+      });
+    };
+    reader.readAsText(file);
+  };
 
   const handleSubmit = (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -405,6 +563,288 @@ export function ServerConnectPanel({
             })}
           </div>
         </section>
+      )}
+
+      {/* TV Box Privacy (PIN) & Backup Settings */}
+      <section className="pt-2">
+        <h2 className="font-display text-lg font-semibold text-white mb-4">
+          Configurações de Privacidade e Backup (TV Box)
+        </h2>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {/* 4-Digit PIN Lock Settings Card */}
+          <div className="p-5 sm:p-6 rounded-2xl bg-[#12151E] border border-white/10 flex flex-col justify-between gap-5">
+            <div className="flex items-start gap-3.5">
+              <div
+                className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 border ${
+                  pinEnabled
+                    ? 'bg-emerald-500/15 border-emerald-400/35 text-emerald-300'
+                    : 'bg-white/6 border-white/10 text-slate-300'
+                }`}
+              >
+                <Shield className="w-5 h-5" />
+              </div>
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="font-display font-semibold text-base text-white">
+                    Bloqueio por PIN (4 dígitos)
+                  </h3>
+                  <span
+                    className={`text-[11px] font-mono px-2 py-0.5 rounded-md ${
+                      pinEnabled
+                        ? 'bg-emerald-500/15 text-emerald-300'
+                        : 'bg-white/8 text-slate-400'
+                    }`}
+                  >
+                    {pinEnabled ? 'Ativo' : 'Desativado'}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs sm:text-sm text-slate-400 leading-relaxed">
+                  {pinEnabled
+                    ? 'O TelaBox solicita o PIN de 4 dígitos ao abrir. Navegável pelas setas do controle remoto (D-Pad) e por toque.'
+                    : 'Proteja a abertura do aplicativo com uma senha numérica de 4 dígitos fácil de digitar pelo controle remoto.'}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2.5">
+              {!pinEnabled ? (
+                <button
+                  type="button"
+                  data-tv-focusable="true"
+                  onClick={() => onConfigurePin('setup')}
+                  className="h-11 px-5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-semibold text-xs sm:text-sm flex items-center gap-2 whitespace-nowrap shrink-0"
+                >
+                  <Lock className="w-4 h-4" />
+                  Ativar PIN de 4 Dígitos
+                </button>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    data-tv-focusable="true"
+                    onClick={() => onConfigurePin('change')}
+                    className="h-11 px-4 rounded-xl bg-white text-[#090A0F] hover:bg-slate-200 font-semibold text-xs sm:text-sm flex items-center gap-2 whitespace-nowrap shrink-0"
+                  >
+                    <Shield className="w-4 h-4" />
+                    Alterar PIN
+                  </button>
+                  <button
+                    type="button"
+                    data-tv-focusable="true"
+                    onClick={onLockNow}
+                    className="h-11 px-4 rounded-xl bg-white/10 hover:bg-white/20 text-white font-medium text-xs sm:text-sm flex items-center gap-2 whitespace-nowrap shrink-0"
+                  >
+                    <Lock className="w-4 h-4" />
+                    Bloquear Agora
+                  </button>
+                  <button
+                    type="button"
+                    data-tv-focusable="true"
+                    onClick={() => onConfigurePin('disable')}
+                    className="h-11 px-4 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-400/35 text-rose-200 font-medium text-xs sm:text-sm flex items-center gap-2 whitespace-nowrap shrink-0"
+                  >
+                    <Unlock className="w-4 h-4" />
+                    Desativar PIN
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* Export / Import Backup Card */}
+          <div className="p-5 sm:p-6 rounded-2xl bg-[#12151E] border border-white/10 flex flex-col justify-between gap-5">
+            <div className="flex items-start gap-3.5">
+              <div className="w-11 h-11 rounded-xl bg-sky-500/15 border border-sky-400/35 text-sky-300 flex items-center justify-center shrink-0">
+                <FileJson className="w-5 h-5" />
+              </div>
+              <div className="min-w-0">
+                <h3 className="font-display font-semibold text-base text-white">
+                  Backup de Servidores e Favoritos
+                </h3>
+                <p className="mt-1 text-xs sm:text-sm text-slate-400 leading-relaxed">
+                  Exporte ou importe seus servidores salvos e vídeos favoritos em arquivo JSON ou texto para transferir entre TV Box, celular e navegador.
+                </p>
+                <p className="mt-1.5 text-xs font-mono tabular-nums text-slate-300">
+                  {savedServers.length} {savedServers.length === 1 ? 'servidor' : 'servidores'} ·{' '}
+                  {favorites.length} {favorites.length === 1 ? 'favorito' : 'favoritos'}
+                </p>
+              </div>
+            </div>
+
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".json,application/json,text/plain"
+              onChange={handleBackupFileSelected}
+              className="hidden"
+            />
+
+            <div className="flex flex-wrap items-center gap-2.5">
+              <button
+                type="button"
+                data-tv-focusable="true"
+                onClick={handleDownloadBackupFile}
+                className="h-11 px-4 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-semibold text-xs sm:text-sm flex items-center gap-2 whitespace-nowrap shrink-0"
+              >
+                <Download className="w-4 h-4" />
+                Exportar Backup (.json)
+              </button>
+              <button
+                type="button"
+                data-tv-focusable="true"
+                onClick={handleOpenExportText}
+                className="h-11 px-4 rounded-xl bg-white/10 hover:bg-white/20 text-white font-medium text-xs sm:text-sm flex items-center gap-2 whitespace-nowrap shrink-0"
+              >
+                <Copy className="w-4 h-4" />
+                Exportar em Texto
+              </button>
+              <button
+                type="button"
+                data-tv-focusable="true"
+                onClick={() => fileInputRef.current?.click()}
+                className="h-11 px-4 rounded-xl bg-white/10 hover:bg-white/20 text-white font-medium text-xs sm:text-sm flex items-center gap-2 whitespace-nowrap shrink-0"
+              >
+                <Upload className="w-4 h-4" />
+                Importar Arquivo
+              </button>
+              <button
+                type="button"
+                data-tv-focusable="true"
+                onClick={handleOpenImportText}
+                className="h-11 px-4 rounded-xl bg-white/10 hover:bg-white/20 text-white font-medium text-xs sm:text-sm flex items-center gap-2 whitespace-nowrap shrink-0"
+              >
+                <ClipboardPaste className="w-4 h-4" />
+                Importar Texto JSON
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {backupFeedback && !backupModalMode && (
+          <div
+            className={`mt-4 p-4 rounded-xl border text-sm ${
+              backupFeedback.type === 'success'
+                ? 'bg-emerald-500/15 border-emerald-400/40 text-emerald-200'
+                : 'bg-rose-500/15 border-rose-500/40 text-rose-200'
+            }`}
+          >
+            {backupFeedback.message}
+          </div>
+        )}
+      </section>
+
+      {/* Export / Import Backup Text Modal */}
+      {backupModalMode && (
+        <div
+          data-tv-scope="modal"
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 sm:p-6"
+        >
+          <div className="w-full max-w-2xl rounded-2xl bg-[#12151E] border border-white/15 p-6 shadow-2xl space-y-4">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h3 className="font-display text-xl font-bold text-white">
+                  {backupModalMode === 'export'
+                    ? 'Exportar Backup em Texto JSON'
+                    : 'Importar Backup em Texto JSON'}
+                </h3>
+                <p className="mt-1 text-xs sm:text-sm text-slate-400">
+                  {backupModalMode === 'export'
+                    ? 'Copie o JSON abaixo ou baixe o arquivo para salvar seus servidores e favoritos.'
+                    : 'Cole o conteúdo JSON de um backup exportado anteriormente pelo TelaBox.'}
+                </p>
+              </div>
+              <button
+                ref={backupModalCloseRef}
+                type="button"
+                data-tv-focusable="true"
+                onClick={() => setBackupModalMode(null)}
+                className="w-10 h-10 rounded-xl bg-white/10 hover:bg-white/20 text-slate-200 flex items-center justify-center shrink-0"
+                aria-label="Fechar"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <textarea
+              data-tv-focusable="true"
+              value={backupText}
+              onChange={(e) => {
+                if (backupModalMode === 'import') {
+                  setBackupText(e.target.value);
+                  setBackupFeedback(null);
+                }
+              }}
+              readOnly={backupModalMode === 'export'}
+              placeholder='{"app":"TelaBox","version":1,"servers":[...],"favorites":[...]}'
+              rows={10}
+              className="w-full rounded-xl bg-[#090A0F] border border-white/15 p-4 text-xs font-mono text-slate-200 placeholder:text-slate-600 focus:border-sky-400"
+            />
+
+            {backupFeedback && (
+              <div
+                className={`p-3.5 rounded-xl border text-xs sm:text-sm ${
+                  backupFeedback.type === 'success'
+                    ? 'bg-emerald-500/15 border-emerald-400/40 text-emerald-200'
+                    : 'bg-rose-500/15 border-rose-500/40 text-rose-200'
+                }`}
+              >
+                {backupFeedback.message}
+              </div>
+            )}
+
+            <div className="flex flex-wrap items-center justify-end gap-2.5 pt-1">
+              {backupModalMode === 'export' ? (
+                <>
+                  <button
+                    type="button"
+                    data-tv-focusable="true"
+                    onClick={handleDownloadBackupFile}
+                    className="h-11 px-4 rounded-xl bg-white/10 hover:bg-white/20 text-white text-sm font-medium flex items-center gap-2 whitespace-nowrap shrink-0"
+                  >
+                    <Download className="w-4 h-4" />
+                    Baixar .json
+                  </button>
+                  <button
+                    type="button"
+                    data-tv-focusable="true"
+                    onClick={() => void handleCopyBackupText()}
+                    className="h-11 px-5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 text-sm font-semibold flex items-center gap-2 whitespace-nowrap shrink-0"
+                  >
+                    {copiedBackup ? (
+                      <Check className="w-4 h-4" />
+                    ) : (
+                      <Copy className="w-4 h-4" />
+                    )}
+                    {copiedBackup ? 'JSON Copiado' : 'Copiar Tudo'}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    data-tv-focusable="true"
+                    onClick={() => void handlePasteFromClipboard()}
+                    className="h-11 px-4 rounded-xl bg-white/10 hover:bg-white/20 text-white text-sm font-medium flex items-center gap-2 whitespace-nowrap shrink-0"
+                  >
+                    <ClipboardPaste className="w-4 h-4" />
+                    Colar Texto
+                  </button>
+                  <button
+                    type="button"
+                    data-tv-focusable="true"
+                    disabled={!backupText.trim()}
+                    onClick={() => applyImportedText(backupText, true)}
+                    className="h-11 px-5 rounded-xl bg-sky-500 hover:bg-sky-400 disabled:opacity-45 text-slate-950 text-sm font-semibold flex items-center gap-2 whitespace-nowrap shrink-0"
+                  >
+                    <Upload className="w-4 h-4" />
+                    Importar Backup
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
