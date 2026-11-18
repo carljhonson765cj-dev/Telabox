@@ -1,4 +1,4 @@
-export type StreamType = 'video' | 'hls' | 'embed' | 'page';
+export type StreamType = 'video' | 'hls' | 'dash' | 'embed' | 'page';
 
 export type ServerKind = 'directory' | 'portal' | 'iptv' | 'feed';
 
@@ -13,7 +13,7 @@ export interface SubtitleTrack {
 export interface QualityOption {
   label: string;
   url: string;
-  streamType: 'video' | 'hls';
+  streamType: 'video' | 'hls' | 'dash';
 }
 
 export interface MediaItem {
