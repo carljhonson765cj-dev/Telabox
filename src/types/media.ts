@@ -33,6 +33,7 @@ export interface MediaItem {
   sourcePageUrl: string;
   subtitles?: SubtitleTrack[];
   qualities?: QualityOption[];
+  is_podcast?: boolean;
 }
 
 export interface CategorySource {
@@ -71,6 +72,7 @@ export interface ScanProgressEvent {
   item?: MediaItem;
   profile?: Omit<ServerProfile, 'id' | 'useProxy'>;
   message?: string;
+  classificationError?: string;
 }
 
 export interface WatchProgress {
