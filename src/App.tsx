@@ -42,6 +42,13 @@ import { canonicalizeMediaUrl, deduplicateMediaItems, normalizeMediaTitle } from
 import tvCinemaBackdrop from './assets/images/tv_cinema_backdrop_1794706797783.jpg';
 
 const RECENT_CATEGORY = 'Adicionados Recentemente';
+const PALAVRAS_BLOQUEADAS_PODCAST = ['podcast', 'entrevista', 'episódio'];
+
+function isPodcastOrBlockedVideo(item: MediaItem): boolean {
+  if (item.is_podcast === true) return true;
+  const titulo = (item.title || '').toLowerCase();
+  return PALAVRAS_BLOQUEADAS_PODCAST.some((palavra) => titulo.includes(palavra));
+}
 
 type NavTab = 'home' | 'servers' | 'folders' | 'search' | 'favorites';
 
@@ -102,7 +109,7 @@ export default function App() {
     error: string | null;
   } | null>(null);
   const [browsingMore, setBrowsingMore] = useState(false);
-  const [browseError, setBrowseError] = useState<string | null>(null);
+  const [browsePausedOnError, setBrowsePausedOnError] = useState(false);
   const [batchFeedback, setBatchFeedback] = useState<string | null>(null);
   const [autoInfiniteScroll, setAutoInfiniteScroll] = useState<boolean>(() => {
     try {
@@ -167,6 +174,11 @@ export default function App() {
     categories: [] as string[],
     error: null as string | null,
   });
+  const [classificationStatus, setClassificationStatus] = useState<{
+    classifying: boolean;
+  }>({ classifying: false });
+  const failedClassificationKeysRef = useRef<Set<string>>(new Set());
+  const lastLatestAttemptRef = useRef<Record<string, number>>({});
 
   // Sync persistence with safe quota fallback for huge multi-page catalogs
   useEffect(() => {
@@ -239,6 +251,123 @@ export default function App() {
     if (!savedServers.length) return null;
     return savedServers.find((s) => s.id === activeServerId) || savedServers[0];
   }, [savedServers, activeServerId]);
+
+  const classifyPendingItems = useCallback(
+    async (targetItems: MediaItem[], forceRetry = false) => {
+      if (targetItems.length === 0) return;
+
+      const batch = targetItems
+        .filter((item) => typeof item.is_podcast !== 'boolean')
+        .filter((item) => forceRetry || !failedClassificationKeysRef.current.has(item.id))
+        .slice(0, 100);
+
+      if (batch.length === 0) return;
+
+      if (forceRetry) {
+        for (const item of batch) {
+          failedClassificationKeysRef.current.delete(item.id);
+        }
+      }
+
+      setClassificationStatus({ classifying: true });
+      try {
+        const { ok, data } = await fetchJson<{
+          results?: Array<{ id: string; is_podcast: boolean }>;
+          error?: string;
+        }>('/api/classify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            items: batch.map((item) => ({
+              id: item.id,
+              title: item.title,
+              rawTitle: item.rawTitle,
+              category: item.category,
+              folderPath: item.folderPath,
+              duration: item.duration,
+              quality: item.quality,
+              format: item.format,
+              description: item.description,
+              url: item.url,
+            })),
+          }),
+        });
+
+        if (!ok || !Array.isArray(data.results)) {
+          throw new Error(data.error || 'Falha ao classificar metadados dos vídeos.');
+        }
+
+        const resultMap = new Map<string, boolean>();
+        for (const entry of data.results) {
+          if (entry && typeof entry.id === 'string' && typeof entry.is_podcast === 'boolean') {
+            resultMap.set(entry.id, entry.is_podcast);
+            failedClassificationKeysRef.current.delete(entry.id);
+          }
+        }
+
+        setSavedServers((prev) =>
+          prev.map((srv) => {
+            let changed = false;
+            const nextItems = srv.items.map((item) => {
+              const cls = resultMap.get(item.id);
+              if (typeof cls === 'boolean' && item.is_podcast !== cls) {
+                changed = true;
+                return { ...item, is_podcast: cls };
+              }
+              return item;
+            });
+            return changed ? { ...srv, items: nextItems } : srv;
+          })
+        );
+
+        setFavorites((prev) => {
+          let changed = false;
+          const next = prev.map((item) => {
+            const cls = resultMap.get(item.id);
+            if (typeof cls === 'boolean' && item.is_podcast !== cls) {
+              changed = true;
+              return { ...item, is_podcast: cls };
+            }
+            return item;
+          });
+          return changed ? next : prev;
+        });
+      } catch (err) {
+        for (const item of batch) {
+          failedClassificationKeysRef.current.add(item.id);
+        }
+        console.warn('Falha ao analisar metadados dos vídeos:', err);
+      } finally {
+        setClassificationStatus({ classifying: false });
+      }
+    },
+    []
+  );
+
+  // Automatically analyze any unclassified items on the active server (or all servers when searching across all)
+  useEffect(() => {
+    if (scanStatus.scanning || classificationStatus.classifying) return;
+    const sourceItems =
+      activeTab === 'search' && searchScope === 'all'
+        ? savedServers.flatMap((s) => s.items)
+        : activeServer?.items || [];
+    const pending = sourceItems.filter(
+      (item) =>
+        typeof item.is_podcast !== 'boolean' &&
+        !failedClassificationKeysRef.current.has(item.id)
+    );
+    if (pending.length > 0) {
+      void classifyPendingItems(pending);
+    }
+  }, [
+    activeServer,
+    savedServers,
+    activeTab,
+    searchScope,
+    scanStatus.scanning,
+    classificationStatus.classifying,
+    classifyPendingItems,
+  ]);
 
   const favoriteIds = useMemo(
     () => new Set(favorites.map((f) => f.id)),
@@ -410,8 +539,18 @@ export default function App() {
       });
 
       const sseUrl = `/api/scan/stream?url=${encodeURIComponent(url)}&mode=${mode}&maxPages=${maxPages}&maxDepth=${maxDepth}`;
-      const es = new EventSource(sseUrl);
-      eventSourceRef.current = es;
+      let es: EventSource;
+      try {
+        es = new EventSource(sseUrl);
+        eventSourceRef.current = es;
+      } catch (err) {
+        setScanStatus((prev) => ({
+          ...prev,
+          scanning: false,
+          error: err instanceof Error ? err.message : 'Falha ao iniciar conexão com o servidor.',
+        }));
+        return;
+      }
 
       es.onmessage = (event) => {
         try {
@@ -435,6 +574,14 @@ export default function App() {
           } else if (payload.type === 'complete' && payload.profile) {
             es.close();
             eventSourceRef.current = null;
+            if (payload.classificationError) {
+              for (const item of payload.profile.items || []) {
+                if (typeof item.is_podcast !== 'boolean') {
+                  failedClassificationKeysRef.current.add(item.id);
+                }
+              }
+              console.warn('Aviso na classificação do servidor:', payload.classificationError);
+            }
             finalizeLiveServer(url, customName, mode, useProxy, payload.profile);
           } else if (payload.type === 'error') {
             es.close();
@@ -578,20 +725,35 @@ export default function App() {
     [savedServers, favorites, activeServerId]
   );
 
-  // Catalog derivations for active server
-  const continueWatchingItems = useMemo(() => {
+  // Keep non-podcast videos in the main feed (excluding Gemini is_podcast: true and blocked podcast keywords)
+  const mainFeedItems = useMemo(() => {
     if (!activeServer) return [];
-    return activeServer.items
+    return activeServer.items.filter((item) => !isPodcastOrBlockedVideo(item));
+  }, [activeServer]);
+
+  const filteredPodcastCount = useMemo(() => {
+    if (!activeServer) return 0;
+    return activeServer.items.filter((item) => isPodcastOrBlockedVideo(item)).length;
+  }, [activeServer]);
+
+  // Catalog derivations for active server main feed (only is_podcast === false)
+  const continueWatchingItems = useMemo(() => {
+    return mainFeedItems
       .filter((item) => {
         const p = progressMap[item.id];
         return p && p.currentTime > 5 && (p.duration === 0 || p.currentTime / p.duration < 0.95);
       })
       .sort((a, b) => (progressMap[b.id]?.updatedAt || 0) - (progressMap[a.id]?.updatedAt || 0));
-  }, [activeServer, progressMap]);
+  }, [mainFeedItems, progressMap]);
 
   const groupedByCategory = useMemo(() => {
     if (!activeServer) return [];
-    const uniqueCats = Array.from(new Set(activeServer.categories)).sort((a, b) => {
+    const uniqueCats = Array.from(
+      new Set([
+        ...activeServer.categories,
+        ...mainFeedItems.map((i) => i.category),
+      ])
+    ).sort((a, b) => {
       if (a === RECENT_CATEGORY) return -1;
       if (b === RECENT_CATEGORY) return 1;
       return 0;
@@ -600,12 +762,12 @@ export default function App() {
       .map((cat) => ({
         category: cat,
         items: deduplicateMediaItems(
-          activeServer.items.filter((i) => i.category === cat),
+          mainFeedItems.filter((i) => i.category === cat),
           { acrossCategories: true }
         ),
       }))
       .filter((group) => group.items.length > 0);
-  }, [activeServer]);
+  }, [activeServer, mainFeedItems]);
 
   const categoryCounts = useMemo(() => {
     const map = new Map<string, number>();
@@ -616,19 +778,18 @@ export default function App() {
   }, [groupedByCategory]);
 
   const featuredItem = useMemo(() => {
-    if (!activeServer || activeServer.items.length === 0) return null;
+    if (mainFeedItems.length === 0) return null;
     if (continueWatchingItems.length > 0) return continueWatchingItems[0];
-    return activeServer.items.find((i) => Boolean(i.thumbnail)) || activeServer.items[0];
-  }, [activeServer, continueWatchingItems]);
+    return mainFeedItems.find((i) => Boolean(i.thumbnail)) || mainFeedItems[0];
+  }, [mainFeedItems, continueWatchingItems]);
 
   const filteredCategoryItems = useMemo(() => {
-    if (!activeServer) return [];
     const raw =
       selectedCategory === 'Tudo'
-        ? activeServer.items
-        : activeServer.items.filter((i) => i.category === selectedCategory);
+        ? mainFeedItems
+        : mainFeedItems.filter((i) => i.category === selectedCategory);
     return deduplicateMediaItems(raw, { acrossCategories: true });
-  }, [activeServer, selectedCategory]);
+  }, [mainFeedItems, selectedCategory]);
 
   const allCategoryNames = useMemo(() => {
     if (!activeServer) return [];
@@ -643,25 +804,30 @@ export default function App() {
     };
 
     if (
-      activeServer.categories.includes(RECENT_CATEGORY) ||
-      activeServer.categorySources?.[RECENT_CATEGORY]
+      (categoryCounts.get(RECENT_CATEGORY) || 0) > 0 ||
+      activeServer.categorySources?.[RECENT_CATEGORY]?.pageLoaded === 0
     ) {
       pushUnique(RECENT_CATEGORY);
     }
 
-    for (const cat of activeServer.categories) {
-      pushUnique(cat);
+    for (const group of groupedByCategory) {
+      pushUnique(group.category);
     }
     if (activeServer.categorySources) {
       const extra = Object.keys(activeServer.categorySources)
-        .filter((c) => !seen.has(c))
+        .filter(
+          (c) =>
+            !seen.has(c) &&
+            ((categoryCounts.get(c) || 0) > 0 ||
+              activeServer.categorySources?.[c]?.pageLoaded === 0)
+        )
         .sort((a, b) => a.localeCompare(b, 'pt-BR'));
       for (const c of extra) {
         pushUnique(c);
       }
     }
     return ordered;
-  }, [activeServer]);
+  }, [activeServer, groupedByCategory, categoryCounts]);
 
   const loadMoreFromServer = useCallback(
     async (targetCat?: string, batchPages = 4) => {
@@ -681,7 +847,7 @@ export default function App() {
 
       if (!targetUrl) return;
       setBrowsingMore(true);
-      setBrowseError(null);
+      setBrowsePausedOnError(false);
       setBatchFeedback(null);
 
       try {
@@ -696,6 +862,7 @@ export default function App() {
           nextPageUrl?: string;
           pagesFetched?: number;
           categorySources?: Record<string, CategorySource>;
+          classificationError?: string;
           error?: string;
         }>(`/api/browse?${qs.toString()}`);
 
@@ -704,6 +871,14 @@ export default function App() {
         }
 
         const fetchedItems = Array.isArray(data.items) ? data.items : [];
+        if (data.classificationError) {
+          for (const item of fetchedItems) {
+            if (typeof item.is_podcast !== 'boolean') {
+              failedClassificationKeysRef.current.add(item.id);
+            }
+          }
+          console.warn('Aviso na classificação de páginas:', data.classificationError);
+        }
         const pagesFetched = Math.max(1, Number(data.pagesFetched) || 1);
         const serverId = activeServer.id;
         const previousCount = activeServer.items.length;
@@ -756,9 +931,8 @@ export default function App() {
           );
         }
       } catch (err) {
-        setBrowseError(
-          err instanceof Error ? err.message : 'Erro ao buscar próximo lote de páginas.'
-        );
+        setBrowsePausedOnError(true);
+        console.warn('Falha ao buscar mais páginas do servidor:', err);
       } finally {
         setBrowsingMore(false);
       }
@@ -767,13 +941,14 @@ export default function App() {
   );
 
   const refreshLatestVideos = useCallback(
-    async (opts?: { silent?: boolean }) => {
+    async (_opts?: { silent?: boolean }) => {
       if (!activeServer || refreshingLatest || scanStatus.scanning) return;
       setRefreshingLatest(true);
-      if (!opts?.silent) setBrowseError(null);
 
       const targetServerId = activeServer.id;
       const hadPreviousUpdate = Boolean(activeServer.lastUpdatedAt);
+
+      lastLatestAttemptRef.current[targetServerId] = Date.now();
 
       try {
         const qs = new URLSearchParams({ serverUrl: activeServer.url });
@@ -784,6 +959,7 @@ export default function App() {
           latestUrl?: string;
           nextPageUrl?: string;
           checkedAt?: number;
+          classificationError?: string;
           error?: string;
         }>(`/api/latest?${qs.toString()}`);
 
@@ -798,6 +974,14 @@ export default function App() {
               folderPath: '/' + RECENT_CATEGORY,
             }))
           : [];
+        if (data.classificationError) {
+          for (const item of latestItems) {
+            if (typeof item.is_podcast !== 'boolean') {
+              failedClassificationKeysRef.current.add(item.id);
+            }
+          }
+          console.warn('Aviso na classificação de novidades:', data.classificationError);
+        }
 
         let newlyAddedCount = 0;
 
@@ -852,11 +1036,7 @@ export default function App() {
           setNewUpdatesNotice({ count: newlyAddedCount, serverId: targetServerId });
         }
       } catch (err) {
-        if (!opts?.silent) {
-          setBrowseError(
-            err instanceof Error ? err.message : 'Não foi possível verificar novidades do site.'
-          );
-        }
+        console.warn('Falha ao atualizar novidades do servidor:', err);
       } finally {
         setRefreshingLatest(false);
       }
@@ -869,7 +1049,10 @@ export default function App() {
     if (!activeServer || playerState || scanStatus.scanning) return;
 
     const staleMs = 120_000;
-    const lastSync = activeServer.lastUpdatedAt || 0;
+    const lastSync = Math.max(
+      activeServer.lastUpdatedAt || 0,
+      lastLatestAttemptRef.current[activeServer.id] || 0
+    );
     if (Date.now() - lastSync > staleMs) {
       const t = window.setTimeout(() => {
         void refreshLatestVideos({ silent: true });
@@ -908,7 +1091,7 @@ export default function App() {
   const handleSelectCategory = useCallback(
     (cat: string) => {
       setSelectedCategory(cat);
-      setBrowseError(null);
+      setBrowsePausedOnError(false);
       setBatchFeedback(null);
       if (
         cat !== 'Tudo' &&
@@ -988,6 +1171,7 @@ export default function App() {
           };
         });
       } catch (err) {
+        console.warn('Falha ao pesquisar conteúdo no servidor:', err);
         setRemoteSearchResults((prev) => ({
           query: term,
           serverId: activeServer.id,
@@ -996,7 +1180,7 @@ export default function App() {
           nextPage: startPage + 1,
           pagesFetched: prev?.pagesFetched || 0,
           hasMore: false,
-          error: err instanceof Error ? err.message : 'Erro ao pesquisar conteúdo no servidor.',
+          error: null,
         }));
       } finally {
         setRemoteSearching(false);
@@ -1025,7 +1209,7 @@ export default function App() {
         const now = Date.now();
         if (now - lastAutoTriggerRef.current < 1500) return;
 
-        if (activeTab === 'home' && activeServer && !browsingMore && !browseError) {
+        if (activeTab === 'home' && activeServer && !browsingMore && !browsePausedOnError) {
           const canLoadMoreHome =
             selectedCategory === 'Tudo'
               ? Boolean(activeServer.nextPageUrl)
@@ -1061,7 +1245,7 @@ export default function App() {
     activeServer,
     selectedCategory,
     browsingMore,
-    browseError,
+    browsePausedOnError,
     loadMoreFromServer,
     remoteSearching,
     remoteSearchResults,
@@ -1071,12 +1255,13 @@ export default function App() {
 
   const searchResults = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    const pool =
+    const rawPool =
       searchScope === 'all'
         ? savedServers.flatMap((s) => s.items)
         : activeServer
         ? activeServer.items
         : [];
+    const pool = rawPool.filter((item) => !isPodcastOrBlockedVideo(item));
 
     const localMatches = q
       ? pool.filter(
@@ -1088,12 +1273,12 @@ export default function App() {
         )
       : pool.slice(0, 24);
 
-    // Combine remote server search results when available for the current query
+    // Combine remote server search results when available for the current query (excluding podcasts/blocked keywords)
     const remoteItems =
       remoteSearchResults &&
       remoteSearchResults.serverId === activeServer?.id &&
       remoteSearchResults.query.toLowerCase() === q
-        ? remoteSearchResults.items
+        ? remoteSearchResults.items.filter((item) => !isPodcastOrBlockedVideo(item))
         : [];
 
     let combined = deduplicateMediaItems([...remoteItems, ...localMatches], {
@@ -1115,29 +1300,35 @@ export default function App() {
     remoteSearchResults,
   ]);
 
+  const featuredYear = useMemo(() => {
+    if (!featuredItem) return null;
+    const match = featuredItem.title.match(/\b(19\d{2}|20\d{2})\b/);
+    return match ? match[1] : null;
+  }, [featuredItem]);
+
   const navItems: Array<{ id: NavTab; label: string; icon: typeof Home; disabled?: boolean }> = [
     { id: 'home', label: 'Início', icon: Home, disabled: !activeServer },
-    { id: 'search', label: 'Pesquisar', icon: Search, disabled: savedServers.length === 0 },
-    { id: 'folders', label: 'Pastas', icon: FolderTree, disabled: !activeServer },
-    { id: 'servers', label: 'Servidores', icon: Server },
+    { id: 'search', label: 'Busca', icon: Search, disabled: savedServers.length === 0 },
+    { id: 'folders', label: 'Categorias', icon: FolderTree, disabled: !activeServer },
     { id: 'favorites', label: 'Favoritos', icon: Star },
+    { id: 'servers', label: 'Backup/PIN', icon: Shield },
   ];
 
   return (
-    <div className="min-h-screen bg-[#090A0F] text-slate-100 flex flex-col md:flex-row">
-      {/* Left 10-Foot TV Navigation Rail */}
-      <aside className="w-full md:w-[228px] shrink-0 bg-[#0D0F16] border-b md:border-b-0 md:border-r border-white/8 flex md:flex-col justify-between p-4 md:py-6 md:px-4 z-20">
-        <div>
-          <div className="flex items-center gap-3 px-2 mb-0 md:mb-8">
-            <div className="w-9 h-9 rounded-xl bg-sky-500 text-slate-950 flex items-center justify-center shrink-0">
-              <Tv className="w-5 h-5" />
+    <div className="min-h-screen bg-[#0B0C10] text-slate-100 flex flex-col md:flex-row">
+      {/* Desktop / TV Box Compact Fixed Left Sidebar */}
+      <aside className="hidden md:flex md:fixed md:inset-y-0 md:left-0 md:w-[96px] lg:w-[108px] bg-[#101218] border-r border-white/8 flex-col justify-between py-5 px-2.5 z-30">
+        <div className="flex flex-col items-center">
+          <div className="flex flex-col items-center gap-1.5 mb-7">
+            <div className="w-11 h-11 rounded-lg bg-[#FFB800] text-[#0B0C10] flex items-center justify-center shadow-lg shadow-[#FFB800]/20">
+              <Tv className="w-6 h-6" />
             </div>
-            <span className="font-display text-xl font-bold tracking-tight text-white whitespace-nowrap">
+            <span className="font-display text-xs font-bold tracking-tight text-white whitespace-nowrap">
               TelaBox
             </span>
           </div>
 
-          <nav className="hidden md:flex flex-col gap-1.5">
+          <nav className="w-full flex flex-col gap-2">
             {navItems.map((nav) => {
               const Icon = nav.icon;
               const isActive = activeTab === nav.id;
@@ -1148,18 +1339,22 @@ export default function App() {
                   data-tv-focusable="true"
                   disabled={nav.disabled}
                   onClick={() => setActiveTab(nav.id)}
-                  className={`w-full h-12 px-3.5 rounded-xl flex items-center gap-3.5 text-sm font-medium transition-colors whitespace-nowrap shrink-0 disabled:opacity-35 ${
+                  className={`relative w-full py-2.5 px-1.5 rounded-lg flex flex-col items-center justify-center gap-1 border-2 transition-transform duration-150 hover:scale-105 focus:scale-105 disabled:opacity-35 ${
                     isActive
-                      ? 'bg-white text-[#090A0F] font-semibold'
-                      : 'text-slate-300 hover:bg-white/8 hover:text-white'
+                      ? 'bg-[#FFB800] border-[#FFB800] text-[#0B0C10] font-bold shadow-lg shadow-[#FFB800]/20'
+                      : 'bg-transparent border-transparent text-slate-300 hover:bg-[#16181F] hover:text-white'
                   }`}
                 >
                   <Icon className="w-5 h-5 shrink-0" />
-                  <span>{nav.label}</span>
+                  <span className="text-[11px] leading-tight whitespace-nowrap truncate max-w-full">
+                    {nav.label}
+                  </span>
                   {nav.id === 'favorites' && favorites.length > 0 && (
                     <span
-                      className={`ml-auto text-xs font-mono tabular-nums ${
-                        isActive ? 'text-slate-700' : 'text-slate-400'
+                      className={`absolute top-1.5 right-1.5 min-w-[16px] h-4 px-1 rounded-full text-[10px] font-mono tabular-nums flex items-center justify-center ${
+                        isActive
+                          ? 'bg-[#0B0C10] text-[#FFB800]'
+                          : 'bg-[#FFB800]/20 text-[#FFB800]'
                       }`}
                     >
                       {favorites.length}
@@ -1171,58 +1366,67 @@ export default function App() {
           </nav>
         </div>
 
-        {/* Mobile / Compact Nav Row */}
-        <nav className="flex md:hidden items-center gap-1.5 overflow-x-auto no-scrollbar">
-          {navItems.map((nav) => {
-            const Icon = nav.icon;
-            const isActive = activeTab === nav.id;
-            return (
-              <button
-                key={nav.id}
-                type="button"
-                data-tv-focusable="true"
-                disabled={nav.disabled}
-                onClick={() => setActiveTab(nav.id)}
-                className={`h-10 px-3 rounded-xl flex items-center gap-2 text-xs font-medium whitespace-nowrap shrink-0 disabled:opacity-35 ${
-                  isActive ? 'bg-white text-[#090A0F] font-semibold' : 'bg-white/6 text-slate-300'
-                }`}
-              >
-                <Icon className="w-4 h-4" />
-                {nav.label}
-              </button>
-            );
-          })}
-        </nav>
-
-        <div className="hidden md:block pt-4 border-t border-white/8">
+        <div className="pt-4 border-t border-white/8 flex flex-col items-center gap-2">
           <button
             type="button"
             data-tv-focusable="true"
             onClick={() => setShowVirtualRemote((r) => !r)}
-            className={`w-full h-11 px-3.5 rounded-xl flex items-center gap-3 text-xs font-medium whitespace-nowrap shrink-0 border ${
+            className={`w-full py-2.5 px-1.5 rounded-lg flex flex-col items-center justify-center gap-1 text-[11px] font-medium border-2 transition-transform duration-150 hover:scale-105 focus:scale-105 ${
               showVirtualRemote
-                ? 'bg-sky-500/15 border-sky-400/50 text-sky-300'
-                : 'bg-[#12151E] border-white/8 text-slate-300 hover:text-white'
+                ? 'bg-[#FFB800]/15 border-[#FFB800] text-[#FFB800]'
+                : 'bg-[#16181F] border-white/8 text-slate-300 hover:text-white'
             }`}
           >
             <Gamepad2 className="w-4 h-4 shrink-0" />
-            Controle Virtual
+            <span className="whitespace-nowrap">Controle</span>
           </button>
         </div>
       </aside>
 
-      {/* Main TV Stage */}
-      <div className="flex-1 min-w-0 flex flex-col">
-        {/* Minimal 10-Foot Top Strip */}
-        <header className="px-6 lg:px-10 py-4 border-b border-white/8 flex flex-wrap items-center justify-between gap-4">
-          <div className="min-w-0">
+      {/* Mobile Fixed Bottom Navigation Bar */}
+      <nav
+        aria-label="Navegação principal"
+        className="md:hidden fixed bottom-0 inset-x-0 z-40 h-16 bg-[#101218]/95 backdrop-blur-md border-t border-white/10 grid grid-cols-5 items-center px-1"
+      >
+        {navItems.map((nav) => {
+          const Icon = nav.icon;
+          const isActive = activeTab === nav.id;
+          return (
+            <button
+              key={nav.id}
+              type="button"
+              data-tv-focusable="true"
+              disabled={nav.disabled}
+              onClick={() => setActiveTab(nav.id)}
+              className={`h-full flex flex-col items-center justify-center gap-1 text-[10px] font-medium transition-colors disabled:opacity-35 ${
+                isActive ? 'text-[#FFB800] font-semibold' : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              <Icon className="w-5 h-5 shrink-0" />
+              <span className="whitespace-nowrap truncate max-w-[68px]">{nav.label}</span>
+            </button>
+          );
+        })}
+      </nav>
+
+      {/* Main TV / Mobile Content Stage */}
+      <div className="flex-1 min-w-0 flex flex-col md:pl-[96px] lg:pl-[108px] pb-16 md:pb-0">
+        {/* Top Utility Strip (non-sticky on mobile to preserve viewport space) */}
+        <header className="px-4 sm:px-6 lg:px-10 py-3.5 border-b border-white/8 bg-[#0B0C10] flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="md:hidden w-8 h-8 rounded-lg bg-[#FFB800] text-[#0B0C10] flex items-center justify-center shrink-0">
+              <Tv className="w-4 h-4" />
+            </div>
             {activeServer ? (
-              <div className="flex items-center gap-3 min-w-0">
-                <span className="font-display font-semibold text-base text-white truncate">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <span className="font-display font-semibold text-sm sm:text-base text-white truncate">
                   {activeServer.name}
                 </span>
                 <span className="hidden sm:inline text-xs font-mono text-slate-400 truncate tabular-nums">
-                  · {activeServer.items.length} conteúdos · {activeServer.categories.length} categorias
+                  · {mainFeedItems.length} vídeos · {allCategoryNames.length} categorias
+                  {filteredPodcastCount > 0
+                    ? ` · ${filteredPodcastCount} ${filteredPodcastCount === 1 ? 'podcast oculto' : 'podcasts ocultos'}`
+                    : ''}
                 </span>
               </div>
             ) : (
@@ -1232,28 +1436,22 @@ export default function App() {
             )}
           </div>
 
-          <div className="flex flex-wrap items-center gap-2.5 sm:gap-3 shrink-0">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-2.5 shrink-0">
             {activeServer && (
               <button
                 type="button"
                 data-tv-focusable="true"
                 disabled={refreshingLatest || scanStatus.scanning}
                 onClick={() => void refreshLatestVideos({ silent: false })}
-                className="h-10 px-4 rounded-xl bg-sky-500/15 hover:bg-sky-500/25 border border-sky-400/35 text-xs font-medium text-sky-200 flex items-center gap-2 whitespace-nowrap shrink-0 disabled:opacity-50"
+                className="h-9 sm:h-10 px-3 sm:px-4 rounded-lg bg-[#16181F] hover:bg-[#1E212B] border-2 border-white/10 hover:border-[#FFB800] focus:border-[#FFB800] text-xs font-medium text-slate-200 flex items-center gap-2 whitespace-nowrap shrink-0 disabled:opacity-50"
               >
-                <RefreshCw className={`w-4 h-4 ${refreshingLatest ? 'animate-spin' : ''}`} />
-                {refreshingLatest ? 'Atualizando...' : 'Atualizar Novidades'}
-              </button>
-            )}
-            {savedServers.length > 0 && (
-              <button
-                type="button"
-                data-tv-focusable="true"
-                onClick={() => setActiveTab('search')}
-                className="h-10 px-4 rounded-xl bg-white/8 hover:bg-white/15 text-xs font-medium text-white flex items-center gap-2 whitespace-nowrap shrink-0"
-              >
-                <Search className="w-4 h-4" />
-                Pesquisar
+                <RefreshCw className={`w-3.5 h-3.5 text-[#FFB800] ${refreshingLatest ? 'animate-spin' : ''}`} />
+                <span className="hidden sm:inline">
+                  {refreshingLatest ? 'Atualizando...' : 'Atualizar Novidades'}
+                </span>
+                <span className="sm:hidden">
+                  {refreshingLatest ? '...' : 'Atualizar'}
+                </span>
               </button>
             )}
             <PWAInstallButton />
@@ -1267,10 +1465,10 @@ export default function App() {
                   setPinModalMode('setup');
                 }
               }}
-              className={`h-10 px-4 rounded-xl border text-xs font-medium flex items-center gap-2 whitespace-nowrap shrink-0 transition-colors ${
+              className={`h-9 sm:h-10 px-3 sm:px-4 rounded-lg border-2 text-xs font-medium flex items-center gap-2 whitespace-nowrap shrink-0 transition-colors ${
                 pinCode
-                  ? 'bg-emerald-500/15 hover:bg-emerald-500/25 border-emerald-400/35 text-emerald-200'
-                  : 'bg-white/8 hover:bg-white/15 border-white/10 text-white'
+                  ? 'bg-[#FFB800]/15 hover:bg-[#FFB800]/25 border-[#FFB800]/50 text-[#FFB800]'
+                  : 'bg-[#16181F] hover:bg-[#1E212B] border-white/10 text-slate-200'
               }`}
               title={
                 pinCode
@@ -1278,19 +1476,20 @@ export default function App() {
                   : 'Ativar bloqueio por PIN de 4 dígitos'
               }
             >
-              <Lock className={`w-4 h-4 ${pinCode ? 'text-emerald-300' : 'text-sky-400'}`} />
-              <span>Bloqueio PIN</span>
+              <Lock className="w-3.5 h-3.5 text-[#FFB800]" />
+              <span className="hidden sm:inline">Bloqueio PIN</span>
+              <span className="sm:hidden">PIN</span>
             </button>
             <button
               type="button"
               data-tv-focusable="true"
               onClick={() => setActiveTab('servers')}
-              className="h-10 px-4 rounded-xl bg-white/8 hover:bg-white/15 text-xs font-medium text-white flex items-center gap-2 whitespace-nowrap shrink-0"
+              className="h-9 sm:h-10 px-3 sm:px-4 rounded-lg bg-[#16181F] hover:bg-[#1E212B] border-2 border-white/10 hover:border-[#FFB800] focus:border-[#FFB800] text-xs font-medium text-white flex items-center gap-1.5 whitespace-nowrap shrink-0"
             >
-              <Plus className="w-4 h-4" />
-              Adicionar Servidor
+              <Plus className="w-3.5 h-3.5 text-[#FFB800]" />
+              <span>Servidor</span>
             </button>
-            <span className="font-mono text-sm tabular-nums text-slate-300 hidden sm:inline">
+            <span className="font-mono text-sm tabular-nums text-slate-300 hidden lg:inline pl-1">
               {clockText}
             </span>
           </div>
@@ -1299,11 +1498,11 @@ export default function App() {
         <OfflineIndicator />
 
         {/* Scrollable Content Viewport */}
-        <main className="flex-1 px-6 lg:px-10 py-7 pb-16 max-w-[1440px] w-full mx-auto">
+        <main className="flex-1 px-4 sm:px-6 lg:px-10 py-6 pb-16 max-w-[1600px] w-full mx-auto">
           {newUpdatesNotice && activeServer && newUpdatesNotice.serverId === activeServer.id && (
-            <div className="mb-6 px-5 py-3.5 rounded-xl bg-sky-500/15 border border-sky-400/40 flex flex-wrap items-center justify-between gap-3">
-              <p className="text-sm font-medium text-sky-100">
-                +{newUpdatesNotice.count}{' '}
+            <div className="mb-6 px-5 py-3.5 rounded-lg bg-[#16181F] border border-[#FFB800]/50 flex flex-wrap items-center justify-between gap-3">
+              <p className="text-sm font-medium text-slate-100">
+                <span className="text-[#FFB800] font-bold">+{newUpdatesNotice.count}</span>{' '}
                 {newUpdatesNotice.count === 1
                   ? 'novo vídeo adicionado recentemente no site'
                   : 'novos vídeos adicionados recentemente no site'}
@@ -1317,26 +1516,27 @@ export default function App() {
                   setSelectedCategory(RECENT_CATEGORY);
                   setNewUpdatesNotice(null);
                 }}
-                className="h-9 px-4 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 font-semibold text-xs whitespace-nowrap shrink-0"
+                className="h-9 px-4 rounded-lg bg-[#FFB800] hover:bg-[#FFC933] text-[#0B0C10] font-semibold text-xs whitespace-nowrap shrink-0"
               >
                 Ver Recentes
               </button>
             </div>
           )}
+
           {/* HOME / CATALOG TAB */}
           {activeTab === 'home' && activeServer && (
             <div className="space-y-8">
-              {/* Dominant Featured Hero Showcase */}
+              {/* Dominant 55vh YouCine-Style Hero Banner */}
               {featuredItem && (
-                <section className="relative rounded-2xl overflow-hidden border border-white/10 min-h-[300px] lg:min-h-[340px] flex items-end">
+                <section className="relative rounded-lg overflow-hidden border border-white/10 h-[55vh] min-h-[380px] max-h-[640px] flex items-end bg-[#16181F]">
                   <div className="absolute inset-0">
                     <img
                       src={tvCinemaBackdrop}
                       alt="Tela de destaque do servidor"
-                      className="w-full h-full object-cover opacity-55"
+                      className="w-full h-full object-cover opacity-50"
                     />
                     {featuredItem.thumbnail && (
-                      <div className="absolute inset-0 opacity-65">
+                      <div className="absolute inset-0 opacity-75">
                         <MediaPoster
                           src={featuredItem.thumbnail}
                           alt={featuredItem.title}
@@ -1344,49 +1544,68 @@ export default function App() {
                         />
                       </div>
                     )}
-                    <div className="absolute inset-0 bg-gradient-to-r from-[#090A0F] via-[#090A0F]/85 to-[#090A0F]/25" />
-                    <div className="absolute inset-0 bg-gradient-to-t from-[#090A0F] via-transparent to-transparent" />
+                    {/* Bottom and Left Cinematic Dark Gradients */}
+                    <div className="absolute inset-0 bg-gradient-to-t from-[#0B0C10] via-[#0B0C10]/65 to-transparent" />
+                    <div className="absolute inset-0 bg-gradient-to-r from-[#0B0C10] via-[#0B0C10]/70 to-transparent" />
                   </div>
 
-                  <div className="relative z-10 p-7 lg:p-10 max-w-2xl">
-                    <p className="text-xs font-mono text-sky-400 mb-2">
-                      {continueWatchingItems.length > 0 ? 'Continuar assistindo' : 'Em destaque no servidor'} ·{' '}
-                      {featuredItem.category}
-                    </p>
-                    <h1 className="font-display text-3xl lg:text-4xl font-bold text-white tracking-tight text-balance">
+                  <div className="relative z-10 p-6 sm:p-8 lg:p-12 max-w-3xl">
+                    <div className="flex flex-wrap items-center gap-2 text-xs sm:text-sm font-medium text-[#FFB800] mb-2.5">
+                      <span>
+                        {continueWatchingItems.length > 0 ? 'Continuar assistindo' : 'Em destaque'}
+                      </span>
+                      <span aria-hidden="true" className="text-slate-500">·</span>
+                      <span className="text-slate-200">{featuredItem.category}</span>
+                      {featuredYear && (
+                        <>
+                          <span aria-hidden="true" className="text-slate-500">·</span>
+                          <span className="font-mono tabular-nums text-slate-200">{featuredYear}</span>
+                        </>
+                      )}
+                      {featuredItem.quality && (
+                        <>
+                          <span aria-hidden="true" className="text-slate-500">·</span>
+                          <span className="font-mono text-[#FFB800]">{featuredItem.quality}</span>
+                        </>
+                      )}
+                      {featuredItem.duration && (
+                        <>
+                          <span aria-hidden="true" className="text-slate-500">·</span>
+                          <span className="font-mono tabular-nums text-slate-300">{featuredItem.duration}</span>
+                        </>
+                      )}
+                    </div>
+
+                    <h1 className="font-display text-3xl sm:text-4xl lg:text-5xl font-bold text-white tracking-tight text-balance leading-tight">
                       {featuredItem.title}
                     </h1>
+
                     {featuredItem.description && (
-                      <p className="mt-2.5 text-sm sm:text-base text-slate-300 line-clamp-2 leading-relaxed">
+                      <p className="mt-3 text-sm sm:text-base text-slate-300 line-clamp-2 leading-relaxed max-w-2xl">
                         {featuredItem.description}
                       </p>
                     )}
-                    <p className="mt-2 text-xs font-mono tabular-nums text-slate-400">
-                      {[featuredItem.format, featuredItem.quality, featuredItem.size]
-                        .filter(Boolean)
-                        .join(' · ') || activeServer.name}
-                    </p>
 
                     <div className="mt-6 flex flex-wrap items-center gap-3">
                       <button
                         type="button"
                         data-tv-focusable="true"
-                        onClick={() => openPlayer(featuredItem, activeServer.items)}
-                        className="h-12 px-7 rounded-xl bg-white text-[#090A0F] hover:bg-slate-200 font-display font-bold text-sm flex items-center gap-2.5 whitespace-nowrap shrink-0"
+                        onClick={() => openPlayer(featuredItem, mainFeedItems)}
+                        className="h-12 px-7 rounded-lg bg-[#FFB800] hover:bg-[#FFC933] text-[#0B0C10] font-display font-bold text-sm sm:text-base flex items-center gap-2.5 whitespace-nowrap shrink-0 shadow-xl shadow-[#FFB800]/20 hover:scale-105 focus:scale-105 transition-transform duration-150"
                       >
                         <Play className="w-4 h-4 fill-current" />
-                        Reproduzir Agora
+                        Assistir Agora
                       </button>
 
                       <button
                         type="button"
                         data-tv-focusable="true"
                         onClick={() => toggleFavorite(featuredItem)}
-                        className="h-12 px-5 rounded-xl bg-white/12 hover:bg-white/20 text-white font-medium text-sm flex items-center gap-2 whitespace-nowrap shrink-0"
+                        className="h-12 px-5 rounded-lg bg-[#16181F]/90 hover:bg-[#1E212B] border-2 border-white/15 hover:border-[#FFB800] focus:border-[#FFB800] text-white font-medium text-sm flex items-center gap-2 whitespace-nowrap shrink-0 hover:scale-105 focus:scale-105 transition-transform duration-150"
                       >
                         <Star
                           className={`w-4 h-4 ${
-                            favoriteIds.has(featuredItem.id) ? 'fill-amber-400 text-amber-400' : ''
+                            favoriteIds.has(featuredItem.id) ? 'fill-[#FFB800] text-[#FFB800]' : ''
                           }`}
                         />
                         {favoriteIds.has(featuredItem.id) ? 'Salvo nos Favoritos' : 'Favoritar'}
@@ -1396,19 +1615,19 @@ export default function App() {
                 </section>
               )}
 
-              {/* Category Filter Strip (loaded categories + all site categories) */}
-              <div className="flex items-center gap-2 overflow-x-auto no-scrollbar py-1">
+              {/* Category Filter Strip */}
+              <div className="flex items-center gap-2 overflow-x-auto scroll-smooth no-scrollbar py-2 px-1 -mx-1">
                 <button
                   type="button"
                   data-tv-focusable="true"
                   onClick={() => handleSelectCategory('Tudo')}
-                  className={`h-10 px-4 rounded-xl text-sm font-medium whitespace-nowrap shrink-0 border transition-colors ${
+                  className={`h-10 px-4 rounded-lg text-sm font-medium whitespace-nowrap shrink-0 border-2 transition-all ${
                     selectedCategory === 'Tudo'
-                      ? 'bg-sky-500 border-sky-400 text-slate-950 font-semibold'
-                      : 'bg-[#12151E] border-white/8 text-slate-300 hover:text-white'
+                      ? 'bg-[#FFB800] border-[#FFB800] text-[#0B0C10] font-bold'
+                      : 'bg-[#16181F] border-white/8 text-slate-300 hover:text-white hover:border-white/25'
                   }`}
                 >
-                  Tudo ({activeServer.items.length})
+                  Tudo ({mainFeedItems.length})
                 </button>
                 {allCategoryNames.map((cat) => {
                   const count = categoryCounts.get(cat) || 0;
@@ -1418,10 +1637,10 @@ export default function App() {
                       type="button"
                       data-tv-focusable="true"
                       onClick={() => handleSelectCategory(cat)}
-                      className={`h-10 px-4 rounded-xl text-sm font-medium whitespace-nowrap shrink-0 border transition-colors ${
+                      className={`h-10 px-4 rounded-lg text-sm font-medium whitespace-nowrap shrink-0 border-2 transition-all ${
                         selectedCategory === cat
-                          ? 'bg-sky-500 border-sky-400 text-slate-950 font-semibold'
-                          : 'bg-[#12151E] border-white/8 text-slate-300 hover:text-white'
+                          ? 'bg-[#FFB800] border-[#FFB800] text-[#0B0C10] font-bold'
+                          : 'bg-[#16181F] border-white/8 text-slate-300 hover:text-white hover:border-white/25'
                       }`}
                     >
                       {count > 0 ? `${cat} (${count})` : cat}
@@ -1430,19 +1649,24 @@ export default function App() {
                 })}
               </div>
 
-              {browseError && (
-                <div className="p-4 rounded-xl bg-rose-500/15 border border-rose-500/40 text-sm text-rose-200">
-                  {browseError}
+              {classificationStatus.classifying && (
+                <div className="px-4 py-3 rounded-lg bg-[#16181F] border border-[#FFB800]/35 text-sm text-slate-200 flex items-center gap-3">
+                  <Loader2 className="w-4 h-4 text-[#FFB800] animate-spin shrink-0" />
+                  <span>
+                    Analisando metadados dos vídeos para manter apenas conteúdos sem podcast no feed principal...
+                  </span>
                 </div>
               )}
 
-              {/* Continue Watching Shelf */}
+              {/* Continue Watching Horizontal Carousel */}
               {selectedCategory === 'Tudo' && continueWatchingItems.length > 0 && (
                 <section>
-                  <h2 className="font-display text-lg font-semibold text-white mb-4">
-                    Continuar Assistindo
-                  </h2>
-                  <div className="flex items-stretch gap-4 overflow-x-auto no-scrollbar pb-2">
+                  <div className="flex items-center justify-between mb-2">
+                    <h2 className="font-display text-lg sm:text-xl font-bold text-white">
+                      Continuar Assistindo
+                    </h2>
+                  </div>
+                  <div className="flex items-stretch gap-4 overflow-x-auto scroll-smooth snap-x snap-mandatory no-scrollbar py-3 px-2 -mx-2">
                     {continueWatchingItems.slice(0, 20).map((item) => (
                       <MediaCard
                         key={item.id}
@@ -1457,25 +1681,50 @@ export default function App() {
                 </section>
               )}
 
-              {/* Organized Shelves (All) or Paginated Category Grid */}
+              {/* Organized Horizontal Carousels (All) or Paginated Category Poster Grid */}
               {selectedCategory === 'Tudo' ? (
                 <div className="space-y-8">
+                  {groupedByCategory.length === 0 && (
+                    <div className="p-10 rounded-lg bg-[#16181F] border border-white/8 text-center">
+                      {classificationStatus.classifying ? (
+                        <div className="flex flex-col items-center gap-3">
+                          <Loader2 className="w-8 h-8 text-[#FFB800] animate-spin" />
+                          <p className="text-base text-slate-200">
+                            Analisando metadados dos vídeos para filtrar conteúdos de podcast...
+                          </p>
+                        </div>
+                      ) : filteredPodcastCount > 0 ? (
+                        <p className="text-base text-slate-300">
+                          Nenhum vídeo disponível no feed principal ({filteredPodcastCount}{' '}
+                          {filteredPodcastCount === 1
+                            ? 'vídeo identificado como podcast foi ocultado'
+                            : 'vídeos identificados como podcast foram ocultados'}
+                          ).
+                        </p>
+                      ) : (
+                        <p className="text-base text-slate-300">
+                          Nenhum vídeo disponível no feed principal ainda.
+                        </p>
+                      )}
+                    </div>
+                  )}
+
                   {groupedByCategory.map((group) => (
                     <section key={group.category}>
-                      <div className="flex items-center justify-between mb-4">
-                        <h2 className="font-display text-lg font-semibold text-white">
+                      <div className="flex items-center justify-between mb-2">
+                        <h2 className="font-display text-lg sm:text-xl font-bold text-white">
                           {group.category}
                         </h2>
                         <button
                           type="button"
                           data-tv-focusable="true"
                           onClick={() => handleSelectCategory(group.category)}
-                          className="text-xs font-medium text-sky-400 hover:text-sky-300 px-3 py-1.5 rounded-lg whitespace-nowrap shrink-0"
+                          className="text-xs font-semibold text-[#FFB800] hover:text-[#FFC933] px-3 py-1.5 rounded-lg whitespace-nowrap shrink-0"
                         >
                           Ver todos ({group.items.length})
                         </button>
                       </div>
-                      <div className="flex items-stretch gap-4 overflow-x-auto no-scrollbar pb-2">
+                      <div className="flex items-stretch gap-4 overflow-x-auto scroll-smooth snap-x snap-mandatory no-scrollbar py-3 px-2 -mx-2">
                         {group.items.slice(0, 20).map((item) => (
                           <MediaCard
                             key={item.id}
@@ -1493,7 +1742,7 @@ export default function App() {
                   {activeServer.nextPageUrl && (
                     <div className="pt-4 flex flex-col items-center gap-3">
                       {batchFeedback && (
-                        <p className="text-xs font-mono text-sky-300/90 tabular-nums">
+                        <p className="text-xs font-mono text-[#FFB800] tabular-nums">
                           {batchFeedback} · {activeServer.pagesScanned} páginas carregadas no total
                         </p>
                       )}
@@ -1503,7 +1752,7 @@ export default function App() {
                           data-tv-focusable="true"
                           disabled={browsingMore}
                           onClick={() => loadMoreFromServer('Tudo', 4)}
-                          className="h-12 px-7 rounded-xl bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-slate-950 font-display font-bold text-sm flex items-center gap-2.5 whitespace-nowrap"
+                          className="h-12 px-7 rounded-lg bg-[#FFB800] hover:bg-[#FFC933] disabled:opacity-50 text-[#0B0C10] font-display font-bold text-sm flex items-center gap-2.5 whitespace-nowrap hover:scale-105 focus:scale-105"
                         >
                           {browsingMore ? (
                             <Loader2 className="w-4 h-4 animate-spin" />
@@ -1518,10 +1767,10 @@ export default function App() {
                           type="button"
                           data-tv-focusable="true"
                           onClick={() => setAutoInfiniteScroll((v) => !v)}
-                          className={`h-12 px-4 rounded-xl border text-xs font-medium whitespace-nowrap transition-colors ${
+                          className={`h-12 px-4 rounded-lg border-2 text-xs font-medium whitespace-nowrap transition-colors ${
                             autoInfiniteScroll
-                              ? 'bg-emerald-500/15 border-emerald-400/40 text-emerald-300'
-                              : 'bg-[#12151E] border-white/10 text-slate-300 hover:text-white'
+                              ? 'bg-[#FFB800]/15 border-[#FFB800]/50 text-[#FFB800]'
+                              : 'bg-[#16181F] border-white/10 text-slate-300 hover:text-white'
                           }`}
                         >
                           Rolagem Infinita: {autoInfiniteScroll ? 'Ativa' : 'Manual'}
@@ -1534,7 +1783,7 @@ export default function App() {
               ) : (
                 <section className="space-y-6">
                   {filteredCategoryItems.length > 0 ? (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
                       {filteredCategoryItems.map((item) => (
                         <MediaCard
                           key={item.id}
@@ -1546,10 +1795,10 @@ export default function App() {
                       ))}
                     </div>
                   ) : (
-                    <div className="p-10 rounded-2xl bg-[#12151E] border border-white/8 text-center">
+                    <div className="p-10 rounded-lg bg-[#16181F] border border-white/8 text-center">
                       {browsingMore ? (
                         <div className="flex flex-col items-center gap-3">
-                          <Loader2 className="w-8 h-8 text-sky-400 animate-spin" />
+                          <Loader2 className="w-8 h-8 text-[#FFB800] animate-spin" />
                           <p className="text-base text-slate-200">
                             Carregando lote de páginas de "{selectedCategory}" direto do site...
                           </p>
@@ -1566,7 +1815,7 @@ export default function App() {
                     Boolean(activeServer.categorySources?.[selectedCategory]?.nextPageUrl)) && (
                     <div className="pt-2 flex flex-col items-center gap-3">
                       {batchFeedback && (
-                        <p className="text-xs font-mono text-sky-300/90 tabular-nums">
+                        <p className="text-xs font-mono text-[#FFB800] tabular-nums">
                           {batchFeedback}
                         </p>
                       )}
@@ -1576,7 +1825,7 @@ export default function App() {
                           data-tv-focusable="true"
                           disabled={browsingMore}
                           onClick={() => loadMoreFromServer(selectedCategory, 4)}
-                          className="h-12 px-7 rounded-xl bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-slate-950 font-display font-bold text-sm flex items-center gap-2.5 whitespace-nowrap"
+                          className="h-12 px-7 rounded-lg bg-[#FFB800] hover:bg-[#FFC933] disabled:opacity-50 text-[#0B0C10] font-display font-bold text-sm flex items-center gap-2.5 whitespace-nowrap hover:scale-105 focus:scale-105"
                         >
                           {browsingMore ? (
                             <Loader2 className="w-4 h-4 animate-spin" />
@@ -1591,10 +1840,10 @@ export default function App() {
                           type="button"
                           data-tv-focusable="true"
                           onClick={() => setAutoInfiniteScroll((v) => !v)}
-                          className={`h-12 px-4 rounded-xl border text-xs font-medium whitespace-nowrap transition-colors ${
+                          className={`h-12 px-4 rounded-lg border-2 text-xs font-medium whitespace-nowrap transition-colors ${
                             autoInfiniteScroll
-                              ? 'bg-emerald-500/15 border-emerald-400/40 text-emerald-300'
-                              : 'bg-[#12151E] border-white/10 text-slate-300 hover:text-white'
+                              ? 'bg-[#FFB800]/15 border-[#FFB800]/50 text-[#FFB800]'
+                              : 'bg-[#16181F] border-white/10 text-slate-300 hover:text-white'
                           }`}
                         >
                           Rolagem Infinita: {autoInfiniteScroll ? 'Ativa' : 'Manual'}
@@ -1608,7 +1857,7 @@ export default function App() {
             </div>
           )}
 
-          {/* SERVERS TAB */}
+          {/* SERVERS & BACKUP / PIN TAB */}
           {activeTab === 'servers' && (
             <ServerConnectPanel
               savedServers={savedServers}
@@ -1641,13 +1890,21 @@ export default function App() {
             />
           )}
 
-          {/* FOLDERS TAB */}
+          {/* CATEGORIES & FOLDERS TAB */}
           {activeTab === 'folders' && activeServer && (
             <FolderExplorerView
-              server={activeServer}
+              server={{
+                ...activeServer,
+                items: mainFeedItems,
+                categories: allCategoryNames,
+              }}
               favoriteIds={favoriteIds}
               progressMap={progressMap}
               onPlay={openPlayer}
+              onSelectCategory={(cat) => {
+                setActiveTab('home');
+                handleSelectCategory(cat);
+              }}
             />
           )}
 
@@ -1655,7 +1912,7 @@ export default function App() {
           {activeTab === 'search' && (activeServer || savedServers.length > 0) && (
             <div className="space-y-6">
               <div>
-                <h1 className="font-display text-2xl font-bold text-white">
+                <h1 className="font-display text-2xl sm:text-3xl font-bold text-white">
                   Pesquisar Conteúdo Específico
                 </h1>
                 <p className="mt-1 text-sm text-slate-400">
@@ -1682,7 +1939,7 @@ export default function App() {
                         ? `Digite o conteúdo para buscar em ${activeServer.name}...`
                         : 'Digite o nome do vídeo ou categoria...'
                     }
-                    className="w-full h-13 pl-12 pr-11 rounded-xl bg-[#12151E] border border-white/15 text-base text-white placeholder:text-slate-500"
+                    className="w-full h-13 pl-12 pr-11 rounded-lg bg-[#16181F] border-2 border-white/12 text-base text-white placeholder:text-slate-500 focus:border-[#FFB800]"
                   />
                   {searchQuery && (
                     <button
@@ -1704,9 +1961,9 @@ export default function App() {
                   type="button"
                   data-tv-focusable="true"
                   onClick={() => setShowSearchKeyboard((k) => !k)}
-                  className="h-13 px-5 rounded-xl bg-[#12151E] hover:bg-[#1A1F2E] border border-white/10 text-sm font-medium text-slate-200 flex items-center justify-center gap-2 whitespace-nowrap shrink-0"
+                  className="h-13 px-5 rounded-lg bg-[#16181F] hover:bg-[#1E212B] border-2 border-white/10 hover:border-[#FFB800] focus:border-[#FFB800] text-sm font-medium text-slate-200 flex items-center justify-center gap-2 whitespace-nowrap shrink-0"
                 >
-                  <Keyboard className="w-4 h-4" />
+                  <Keyboard className="w-4 h-4 text-[#FFB800]" />
                   Teclado TV
                 </button>
 
@@ -1715,7 +1972,7 @@ export default function App() {
                     type="submit"
                     data-tv-focusable="true"
                     disabled={!searchQuery.trim() || remoteSearching}
-                    className="h-13 px-6 rounded-xl bg-sky-500 hover:bg-sky-400 disabled:opacity-45 text-slate-950 font-display font-bold text-sm flex items-center justify-center gap-2 whitespace-nowrap shrink-0"
+                    className="h-13 px-6 rounded-lg bg-[#FFB800] hover:bg-[#FFC933] disabled:opacity-45 text-[#0B0C10] font-display font-bold text-sm flex items-center justify-center gap-2 whitespace-nowrap shrink-0 hover:scale-105 focus:scale-105"
                   >
                     {remoteSearching ? (
                       <Loader2 className="w-4 h-4 animate-spin" />
@@ -1730,14 +1987,14 @@ export default function App() {
               {/* Scope & Quality Filters */}
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex flex-wrap items-center gap-2">
-                  <div className="flex items-center gap-1 p-1 rounded-lg bg-[#12151E] border border-white/10">
+                  <div className="flex items-center gap-1 p-1 rounded-lg bg-[#16181F] border border-white/10">
                     <button
                       type="button"
                       data-tv-focusable="true"
                       onClick={() => setSearchScope('active')}
                       className={`px-3.5 py-1.5 rounded-md text-xs font-medium whitespace-nowrap shrink-0 ${
                         searchScope === 'active'
-                          ? 'bg-white text-[#090A0F] font-semibold'
+                          ? 'bg-[#FFB800] text-[#0B0C10] font-semibold'
                           : 'text-slate-300 hover:text-white'
                       }`}
                     >
@@ -1750,7 +2007,7 @@ export default function App() {
                         onClick={() => setSearchScope('all')}
                         className={`px-3.5 py-1.5 rounded-md text-xs font-medium whitespace-nowrap shrink-0 ${
                           searchScope === 'all'
-                            ? 'bg-white text-[#090A0F] font-semibold'
+                            ? 'bg-[#FFB800] text-[#0B0C10] font-semibold'
                             : 'text-slate-300 hover:text-white'
                         }`}
                       >
@@ -1759,14 +2016,14 @@ export default function App() {
                     )}
                   </div>
 
-                  <div className="flex items-center gap-1 p-1 rounded-lg bg-[#12151E] border border-white/10">
+                  <div className="flex items-center gap-1 p-1 rounded-lg bg-[#16181F] border border-white/10">
                     <button
                       type="button"
                       data-tv-focusable="true"
                       onClick={() => setSearchQualityFilter('all')}
                       className={`px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap shrink-0 ${
                         searchQualityFilter === 'all'
-                          ? 'bg-sky-500 text-slate-950 font-semibold'
+                          ? 'bg-[#FFB800] text-[#0B0C10] font-semibold'
                           : 'text-slate-300 hover:text-white'
                       }`}
                     >
@@ -1778,7 +2035,7 @@ export default function App() {
                       onClick={() => setSearchQualityFilter('hd')}
                       className={`px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap shrink-0 ${
                         searchQualityFilter === 'hd'
-                          ? 'bg-sky-500 text-slate-950 font-semibold'
+                          ? 'bg-[#FFB800] text-[#0B0C10] font-semibold'
                           : 'text-slate-300 hover:text-white'
                       }`}
                     >
@@ -1796,7 +2053,7 @@ export default function App() {
                         type="button"
                         data-tv-focusable="true"
                         onClick={() => runRemoteSearch(term)}
-                        className="px-3 py-1.5 rounded-lg bg-[#12151E] hover:bg-[#1B2030] border border-white/10 text-xs text-slate-200 whitespace-nowrap shrink-0"
+                        className="px-3 py-1.5 rounded-lg bg-[#16181F] hover:bg-[#1E212B] border-2 border-white/10 hover:border-[#FFB800] text-xs text-slate-200 whitespace-nowrap shrink-0"
                       >
                         {term}
                       </button>
@@ -1814,12 +2071,6 @@ export default function App() {
                 />
               )}
 
-              {remoteSearchResults?.error && (
-                <div className="p-4 rounded-xl bg-rose-500/15 border border-rose-500/40 text-sm text-rose-200">
-                  {remoteSearchResults.error}
-                </div>
-              )}
-
               <div>
                 <p className="text-sm text-slate-400 mb-4 font-mono tabular-nums">
                   {searchResults.length}{' '}
@@ -1833,7 +2084,7 @@ export default function App() {
 
                 {searchResults.length > 0 ? (
                   <div className="space-y-6">
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
                       {searchResults.map((item) => (
                         <MediaCard
                           key={item.id}
@@ -1858,7 +2109,7 @@ export default function App() {
                               onClick={() =>
                                 runRemoteSearch(searchQuery.trim(), remoteSearchResults.nextPage, 3)
                               }
-                              className="h-12 px-7 rounded-xl bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-slate-950 font-display font-bold text-sm flex items-center gap-2.5 whitespace-nowrap"
+                              className="h-12 px-7 rounded-lg bg-[#FFB800] hover:bg-[#FFC933] disabled:opacity-50 text-[#0B0C10] font-display font-bold text-sm flex items-center gap-2.5 whitespace-nowrap hover:scale-105 focus:scale-105"
                             >
                               {remoteSearching ? (
                                 <Loader2 className="w-4 h-4 animate-spin" />
@@ -1873,10 +2124,10 @@ export default function App() {
                               type="button"
                               data-tv-focusable="true"
                               onClick={() => setAutoInfiniteScroll((v) => !v)}
-                              className={`h-12 px-4 rounded-xl border text-xs font-medium whitespace-nowrap transition-colors ${
+                              className={`h-12 px-4 rounded-lg border-2 text-xs font-medium whitespace-nowrap transition-colors ${
                                 autoInfiniteScroll
-                                  ? 'bg-emerald-500/15 border-emerald-400/40 text-emerald-300'
-                                  : 'bg-[#12151E] border-white/10 text-slate-300 hover:text-white'
+                                  ? 'bg-[#FFB800]/15 border-[#FFB800]/50 text-[#FFB800]'
+                                  : 'bg-[#16181F] border-white/10 text-slate-300 hover:text-white'
                               }`}
                             >
                               Rolagem Infinita: {autoInfiniteScroll ? 'Ativa' : 'Manual'}
@@ -1887,7 +2138,7 @@ export default function App() {
                       )}
                   </div>
                 ) : (
-                  <div className="p-10 rounded-2xl bg-[#12151E] border border-white/8 text-center">
+                  <div className="p-10 rounded-lg bg-[#16181F] border border-white/8 text-center">
                     <p className="text-base text-slate-300">
                       Nenhum vídeo encontrado no catálogo local para "{searchQuery}".
                     </p>
@@ -1896,7 +2147,7 @@ export default function App() {
                         type="button"
                         data-tv-focusable="true"
                         onClick={() => runRemoteSearch()}
-                        className="mt-4 h-11 px-6 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-semibold text-sm inline-flex items-center gap-2 whitespace-nowrap"
+                        className="mt-4 h-11 px-6 rounded-lg bg-[#FFB800] hover:bg-[#FFC933] text-[#0B0C10] font-semibold text-sm inline-flex items-center gap-2 whitespace-nowrap"
                       >
                         <Globe className="w-4 h-4" />
                         Buscar "{searchQuery.trim()}" direto no servidor
@@ -1912,7 +2163,7 @@ export default function App() {
           {activeTab === 'favorites' && (
             <div className="space-y-6">
               <div>
-                <h1 className="font-display text-2xl font-bold text-white">
+                <h1 className="font-display text-2xl sm:text-3xl font-bold text-white">
                   Favoritos Salvos
                 </h1>
                 <p className="text-sm text-slate-400 mt-1 font-mono tabular-nums">
@@ -1922,7 +2173,7 @@ export default function App() {
               </div>
 
               {favorites.length > 0 ? (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
                   {favorites.map((item) => (
                     <MediaCard
                       key={item.id}
@@ -1934,8 +2185,8 @@ export default function App() {
                   ))}
                 </div>
               ) : (
-                <div className="p-10 rounded-2xl bg-[#12151E] border border-white/8 text-center max-w-xl">
-                  <Star className="w-9 h-9 text-slate-500 mx-auto mb-3" />
+                <div className="p-10 rounded-lg bg-[#16181F] border border-white/8 text-center max-w-xl">
+                  <Star className="w-9 h-9 text-[#FFB800]/60 mx-auto mb-3" />
                   <h2 className="font-display text-lg font-semibold text-white">
                     Nenhum favorito ainda
                   </h2>
@@ -1946,7 +2197,7 @@ export default function App() {
                     type="button"
                     data-tv-focusable="true"
                     onClick={() => setActiveTab(activeServer ? 'home' : 'servers')}
-                    className="mt-5 h-11 px-5 rounded-xl bg-white text-[#090A0F] font-semibold text-sm whitespace-nowrap"
+                    className="mt-5 h-11 px-5 rounded-lg bg-[#FFB800] hover:bg-[#FFC933] text-[#0B0C10] font-semibold text-sm whitespace-nowrap"
                   >
                     {activeServer ? 'Explorar Catálogo' : 'Conectar Servidor'}
                   </button>
@@ -1957,12 +2208,12 @@ export default function App() {
         </main>
 
         {/* Quiet 1-line Remote Keybinding Footer */}
-        <footer className="px-6 lg:px-10 py-3 border-t border-white/8 bg-[#0B0D13] flex flex-wrap items-center justify-between gap-4 text-xs text-slate-400">
+        <footer className="px-4 sm:px-6 lg:px-10 py-3 border-t border-white/8 bg-[#0B0C10] flex flex-wrap items-center justify-between gap-4 text-xs text-slate-400">
           <span>Setas: Navegar · OK / Enter: Selecionar · Voltar / ESC: Retornar</span>
           <button
             type="button"
             onClick={() => setShowVirtualRemote((r) => !r)}
-            className="text-sky-400 hover:text-sky-300 font-medium md:hidden"
+            className="text-[#FFB800] hover:text-[#FFC933] font-medium md:hidden"
           >
             {showVirtualRemote ? 'Ocultar Controle Virtual' : 'Abrir Controle Virtual'}
           </button>
@@ -2006,10 +2257,10 @@ export default function App() {
           data-tv-scope="modal"
           className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
         >
-          <div className="w-full max-w-sm rounded-2xl bg-[#12151E] border border-white/15 p-6 shadow-2xl space-y-4">
+          <div className="w-full max-w-sm rounded-lg bg-[#16181F] border border-white/15 p-6 shadow-2xl space-y-4">
             <div className="flex items-start justify-between gap-4">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-emerald-500/15 border border-emerald-400/35 text-emerald-300 flex items-center justify-center shrink-0">
+                <div className="w-10 h-10 rounded-lg bg-[#FFB800]/15 border border-[#FFB800]/40 text-[#FFB800] flex items-center justify-center shrink-0">
                   <Lock className="w-5 h-5" />
                 </div>
                 <div>
@@ -2026,7 +2277,7 @@ export default function App() {
                 type="button"
                 data-tv-focusable="true"
                 onClick={() => setShowPinQuickMenu(false)}
-                className="w-9 h-9 rounded-xl bg-white/10 hover:bg-white/20 text-slate-300 flex items-center justify-center shrink-0"
+                className="w-9 h-9 rounded-lg bg-white/10 hover:bg-white/20 text-slate-300 flex items-center justify-center shrink-0"
                 aria-label="Fechar"
               >
                 <X className="w-4 h-4" />
@@ -2041,7 +2292,7 @@ export default function App() {
                   setShowPinQuickMenu(false);
                   setPinModalMode('change');
                 }}
-                className="w-full h-12 px-4 rounded-xl bg-white text-[#090A0F] hover:bg-slate-200 font-semibold text-sm flex items-center justify-center gap-2 whitespace-nowrap"
+                className="w-full h-12 px-4 rounded-lg bg-[#FFB800] text-[#0B0C10] hover:bg-[#FFC933] font-semibold text-sm flex items-center justify-center gap-2 whitespace-nowrap"
               >
                 <Shield className="w-4 h-4" />
                 Alterar PIN de 4 Dígitos
@@ -2054,9 +2305,9 @@ export default function App() {
                   setPlayerState(null);
                   setIsAppUnlocked(false);
                 }}
-                className="w-full h-12 px-4 rounded-xl bg-white/10 hover:bg-white/20 text-white font-medium text-sm flex items-center justify-center gap-2 whitespace-nowrap"
+                className="w-full h-12 px-4 rounded-lg bg-white/10 hover:bg-white/20 text-white font-medium text-sm flex items-center justify-center gap-2 whitespace-nowrap"
               >
-                <Lock className="w-4 h-4 text-sky-400" />
+                <Lock className="w-4 h-4 text-[#FFB800]" />
                 Bloquear Tela Agora
               </button>
               <button
@@ -2066,7 +2317,7 @@ export default function App() {
                   setShowPinQuickMenu(false);
                   setPinModalMode('disable');
                 }}
-                className="w-full h-12 px-4 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-400/35 text-rose-200 font-medium text-sm flex items-center justify-center gap-2 whitespace-nowrap"
+                className="w-full h-12 px-4 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 border border-rose-400/35 text-rose-200 font-medium text-sm flex items-center justify-center gap-2 whitespace-nowrap"
               >
                 <Unlock className="w-4 h-4" />
                 Desativar Bloqueio PIN
