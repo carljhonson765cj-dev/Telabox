@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import { createServer as createHttpServer } from 'node:http';
 import { createServer as createViteServer } from 'vite';
@@ -17,12 +18,17 @@ import {
   resolveVideoPageStream,
 } from './server/resolver.ts';
 import { registerBrowserProxyRoutes } from './server/browserProxy.ts';
+import {
+  classifyMediaItems,
+  classifyVideoMetadataList,
+  type VideoMetadataInput,
+} from './server/podcastClassifier.ts';
 
 const PORT = 3000;
 
 async function startServer() {
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ limit: '2mb' }));
 
   // Built-in demo HTML video server & open directory for instant testing
   app.use('/demo-server', createDemoServerRouter());
@@ -67,7 +73,31 @@ async function startServer() {
         },
       });
 
-      sendEvent({ type: 'complete', profile });
+      let classificationError: string | undefined;
+      if (profile.items.length > 0) {
+        sendEvent({
+          type: 'progress',
+          pagesScanned: profile.pagesScanned,
+          maxPages,
+          foldersFound: profile.foldersFound,
+          itemsFound: profile.items.length,
+          currentUrl: 'Analisando metadados dos vídeos (filtro anti-podcast)...',
+          categories: profile.categories,
+        });
+        try {
+          profile.items = await classifyMediaItems(profile.items, abortController.signal);
+        } catch (err) {
+          if (abortController.signal.aborted) throw err;
+          classificationError =
+            err instanceof Error ? err.message : 'Erro ao classificar metadados dos vídeos.';
+        }
+      }
+
+      sendEvent({
+        type: 'complete',
+        profile,
+        ...(classificationError ? { classificationError } : {}),
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Falha ao carregar o servidor.';
       sendEvent({ type: 'error', message });
@@ -90,10 +120,73 @@ async function startServer() {
         maxDepth: Math.min(Math.max(Number(maxDepth) || 1, 0), 3),
         localBaseUrl,
       });
-      res.json(profile);
+      let classificationError: string | undefined;
+      try {
+        profile.items = await classifyMediaItems(profile.items);
+      } catch (err) {
+        classificationError =
+          err instanceof Error ? err.message : 'Erro ao classificar metadados dos vídeos.';
+      }
+      res.json({
+        ...profile,
+        ...(classificationError ? { classificationError } : {}),
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Erro ao escanear servidor.';
       res.status(400).json({ error: message });
+    }
+  });
+
+  // On-demand metadata classification endpoint (accepts a batch of items or a single video item)
+  app.post('/api/classify', async (req, res) => {
+    const abortController = new AbortController();
+    req.on('close', () => abortController.abort());
+
+    try {
+      const body = req.body || {};
+      const rawList: unknown[] = Array.isArray(body.items)
+        ? body.items
+        : body.item && typeof body.item === 'object'
+        ? [body.item]
+        : typeof body.title === 'string'
+        ? [body]
+        : [];
+
+      if (rawList.length === 0) {
+        res.status(400).json({ error: 'Informe os metadados de ao menos um vídeo para análise.' });
+        return;
+      }
+
+      const inputs: VideoMetadataInput[] = rawList
+        .filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null)
+        .slice(0, 150)
+        .map((entry, idx) => ({
+          id: typeof entry.id === 'string' && entry.id.trim() ? entry.id.trim() : `item_${idx}`,
+          title: typeof entry.title === 'string' ? entry.title : String(entry.rawTitle || 'Sem título'),
+          rawTitle: typeof entry.rawTitle === 'string' ? entry.rawTitle : undefined,
+          category: typeof entry.category === 'string' ? entry.category : undefined,
+          folderPath: typeof entry.folderPath === 'string' ? entry.folderPath : undefined,
+          duration: typeof entry.duration === 'string' ? entry.duration : undefined,
+          quality: typeof entry.quality === 'string' ? entry.quality : undefined,
+          format: typeof entry.format === 'string' ? entry.format : undefined,
+          description: typeof entry.description === 'string' ? entry.description : undefined,
+          url: typeof entry.url === 'string' ? entry.url : undefined,
+        }));
+
+      const map = await classifyVideoMetadataList(inputs, abortController.signal);
+      const results = inputs.map((item) => ({
+        id: item.id,
+        is_podcast: map.get(item.id) === true,
+      }));
+
+      res.json({
+        results,
+        ...(results.length === 1 ? { is_podcast: results[0].is_podcast } : {}),
+      });
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Erro ao classificar metadados dos vídeos.';
+      res.status(502).json({ error: message });
     }
   });
 
@@ -121,7 +214,18 @@ async function startServer() {
         localBaseUrl,
         signal: abortController.signal,
       });
-      res.json(result);
+      let classificationError: string | undefined;
+      try {
+        result.items = await classifyMediaItems(result.items, abortController.signal);
+      } catch (err) {
+        if (abortController.signal.aborted) throw err;
+        classificationError =
+          err instanceof Error ? err.message : 'Erro ao classificar metadados dos vídeos.';
+      }
+      res.json({
+        ...result,
+        ...(classificationError ? { classificationError } : {}),
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Erro ao pesquisar conteúdo no servidor.';
       res.status(502).json({ error: message });
@@ -153,7 +257,18 @@ async function startServer() {
         localBaseUrl,
         signal: abortController.signal,
       });
-      res.json(result);
+      let classificationError: string | undefined;
+      try {
+        result.items = await classifyMediaItems(result.items, abortController.signal);
+      } catch (err) {
+        if (abortController.signal.aborted) throw err;
+        classificationError =
+          err instanceof Error ? err.message : 'Erro ao classificar metadados dos vídeos.';
+      }
+      res.json({
+        ...result,
+        ...(classificationError ? { classificationError } : {}),
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Erro ao carregar página do servidor.';
       res.status(502).json({ error: message });
@@ -178,7 +293,17 @@ async function startServer() {
         latestUrl,
         localBaseUrl,
       });
-      res.json(result);
+      let classificationError: string | undefined;
+      try {
+        result.items = await classifyMediaItems(result.items);
+      } catch (err) {
+        classificationError =
+          err instanceof Error ? err.message : 'Erro ao classificar metadados dos vídeos.';
+      }
+      res.json({
+        ...result,
+        ...(classificationError ? { classificationError } : {}),
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Erro ao buscar novidades do site.';
       res.status(502).json({ error: message });

@@ -55,9 +55,10 @@ export default defineConfig(() => {
           ],
         },
         workbox: {
+          maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
           globPatterns: ['**/*.{js,css,html,ico,png,svg,jpg,jpeg,webp,woff2}'],
           navigateFallback: 'index.html',
-          navigateFallbackDenylist: [/^\/api\//, /^\/demo-server/],
+          navigateFallbackDenylist: [/^\/api\//, /^\/demo-server/, /^\/vendor\//],
           cleanupOutdatedCaches: true,
           runtimeCaching: [
             {
@@ -66,6 +67,10 @@ export default defineConfig(() => {
             },
             {
               urlPattern: /^\/demo-server.*/i,
+              handler: 'NetworkOnly',
+            },
+            {
+              urlPattern: /^\/vendor\/.*/i,
               handler: 'NetworkOnly',
             },
             {
