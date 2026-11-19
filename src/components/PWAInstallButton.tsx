@@ -34,7 +34,7 @@ export function PWAInstallButton() {
             setShowIOSGuide(true);
           }
         }}
-        className="h-10 px-4 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-400/35 text-xs font-medium text-emerald-200 flex items-center gap-2 whitespace-nowrap shrink-0"
+        className="h-10 px-4 rounded-lg bg-[#FFB800]/15 hover:bg-[#FFB800]/25 border border-[#FFB800]/40 text-xs font-medium text-[#FFB800] flex items-center gap-2 whitespace-nowrap shrink-0"
       >
         <Download className="w-4 h-4 shrink-0" />
         Instalar App
@@ -48,7 +48,7 @@ export function PWAInstallButton() {
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-md rounded-2xl bg-[#12151E] border border-white/12 p-6 text-slate-100 shadow-2xl"
+            className="w-full max-w-md rounded-lg bg-[#16181F] border border-white/12 p-6 text-slate-100 shadow-2xl"
           >
             <div className="flex items-start justify-between gap-4">
               <div>
@@ -64,7 +64,7 @@ export function PWAInstallButton() {
                 data-tv-focusable="true"
                 aria-label="Fechar"
                 onClick={() => setShowIOSGuide(false)}
-                className="w-9 h-9 rounded-xl bg-white/8 hover:bg-white/15 flex items-center justify-center text-slate-300 shrink-0"
+                className="w-9 h-9 rounded-lg bg-white/8 hover:bg-white/15 flex items-center justify-center text-slate-300 shrink-0"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -72,19 +72,19 @@ export function PWAInstallButton() {
 
             <ol className="mt-5 space-y-3 text-sm text-slate-300">
               <li className="flex items-center gap-3">
-                <span className="w-6 h-6 rounded-full bg-sky-500/20 text-sky-300 text-xs font-mono flex items-center justify-center shrink-0">
+                <span className="w-6 h-6 rounded-full bg-[#FFB800]/20 text-[#FFB800] text-xs font-mono flex items-center justify-center shrink-0">
                   1
                 </span>
                 <span>
                   Toque no botão{' '}
                   <span className="inline-flex items-center gap-1 font-semibold text-white">
-                    <Share className="w-3.5 h-3.5 text-sky-400" /> Compartilhar
+                    <Share className="w-3.5 h-3.5 text-[#FFB800]" /> Compartilhar
                   </span>{' '}
                   na barra do navegador.
                 </span>
               </li>
               <li className="flex items-center gap-3">
-                <span className="w-6 h-6 rounded-full bg-sky-500/20 text-sky-300 text-xs font-mono flex items-center justify-center shrink-0">
+                <span className="w-6 h-6 rounded-full bg-[#FFB800]/20 text-[#FFB800] text-xs font-mono flex items-center justify-center shrink-0">
                   2
                 </span>
                 <span>
@@ -92,7 +92,7 @@ export function PWAInstallButton() {
                 </span>
               </li>
               <li className="flex items-center gap-3">
-                <span className="w-6 h-6 rounded-full bg-sky-500/20 text-sky-300 text-xs font-mono flex items-center justify-center shrink-0">
+                <span className="w-6 h-6 rounded-full bg-[#FFB800]/20 text-[#FFB800] text-xs font-mono flex items-center justify-center shrink-0">
                   3
                 </span>
                 <span>
@@ -105,7 +105,7 @@ export function PWAInstallButton() {
               type="button"
               data-tv-focusable="true"
               onClick={() => setShowIOSGuide(false)}
-              className="mt-6 w-full h-11 rounded-xl bg-white text-[#090A0F] font-semibold text-sm"
+              className="mt-6 w-full h-11 rounded-lg bg-[#FFB800] hover:bg-[#FFC933] text-[#0B0C10] font-semibold text-sm"
             >
               Entendi
             </button>

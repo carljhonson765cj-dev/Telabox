@@ -41,16 +41,16 @@ export function MediaPoster({ src, alt, category = '', className = '' }: MediaPo
 
   return (
     <div
-      className={`w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-[#161B26] via-[#10131C] to-[#0A0C12] px-4 text-center ${className}`}
+      className={`w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-[#1C1F2A] via-[#16181F] to-[#0B0C10] px-4 text-center ${className}`}
     >
-      <div className="w-11 h-11 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center mb-2.5 text-slate-400">
+      <div className="w-11 h-11 rounded-lg bg-[#FFB800]/10 border border-[#FFB800]/25 flex items-center justify-center mb-3 text-[#FFB800]">
         <Film className="w-5 h-5" />
       </div>
-      <p className="text-xs font-medium text-slate-300 line-clamp-2 max-w-[85%] leading-snug">
+      <p className="text-xs font-medium text-slate-200 line-clamp-3 max-w-[90%] leading-snug">
         {alt}
       </p>
       {category && (
-        <span className="mt-1 text-[11px] text-slate-500 truncate max-w-[85%]">
+        <span className="mt-1.5 text-[11px] text-slate-400 truncate max-w-[90%]">
           {category}
         </span>
       )}

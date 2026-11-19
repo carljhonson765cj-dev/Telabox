@@ -1201,7 +1201,7 @@ export function VideoPlayerModal({
       {!playbackStarted && !playerError && (resolving || Boolean(streamUrl)) && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/80 z-10 pointer-events-none">
           <div className="flex flex-col items-center gap-3 text-center px-6">
-            <Loader2 className="w-10 h-10 text-sky-400 animate-spin" />
+            <Loader2 className="w-10 h-10 text-[#FFB800] animate-spin" />
             <p className="font-display text-lg font-semibold text-white">
               {resolving
                 ? 'Carregando fluxo de vídeo do servidor...'
@@ -1220,7 +1220,7 @@ export function VideoPlayerModal({
 
       {/* Automatic Fallback Notice Toast */}
       {fallbackNotice && !resolving && !playerError && (
-        <div className="absolute top-20 left-1/2 -translate-x-1/2 z-30 max-w-xl px-4 py-2.5 rounded-xl bg-amber-500/20 border border-amber-400/45 text-xs font-medium text-amber-100 backdrop-blur-md shadow-xl pointer-events-none text-center">
+        <div className="absolute top-20 left-1/2 -translate-x-1/2 z-30 max-w-xl px-4 py-2.5 rounded-lg bg-[#FFB800]/20 border border-[#FFB800]/45 text-xs font-medium text-[#FFE294] backdrop-blur-md shadow-xl pointer-events-none text-center">
           {fallbackNotice}
         </div>
       )}
@@ -1231,12 +1231,12 @@ export function VideoPlayerModal({
           key={seekIndicator.key}
           className="absolute inset-0 z-30 flex items-center justify-center pointer-events-none"
         >
-          <div className="px-6 py-4 rounded-2xl bg-[#0B0D14]/90 border border-white/15 backdrop-blur-md shadow-2xl flex flex-col items-center gap-2 min-w-[200px]">
+          <div className="px-6 py-4 rounded-lg bg-[#16181F]/95 border border-white/15 backdrop-blur-md shadow-2xl flex flex-col items-center gap-2 min-w-[200px]">
             <div className="flex items-center gap-2.5 text-white">
               {seekIndicator.delta < 0 ? (
-                <RotateCcw className="w-6 h-6 text-sky-400" />
+                <RotateCcw className="w-6 h-6 text-[#FFB800]" />
               ) : (
-                <RotateCw className="w-6 h-6 text-sky-400" />
+                <RotateCw className="w-6 h-6 text-[#FFB800]" />
               )}
               <span className="font-display text-2xl font-bold tabular-nums">
                 {seekIndicator.delta > 0 ? `+${seekIndicator.delta}s` : `${seekIndicator.delta}s`}
@@ -1249,7 +1249,7 @@ export function VideoPlayerModal({
             {duration > 0 && (
               <div className="w-40 h-1.5 rounded-full bg-white/15 overflow-hidden mt-0.5">
                 <div
-                  className="h-full bg-sky-400 rounded-full"
+                  className="h-full bg-[#FFB800] rounded-full"
                   style={{
                     width: `${Math.min(100, Math.max(0, (seekIndicator.targetTime / duration) * 100))}%`,
                   }}
@@ -1263,8 +1263,8 @@ export function VideoPlayerModal({
       {/* Error Recovery Banner */}
       {playerError && !resolving && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/80 p-6 z-20 pointer-events-none">
-          <div className="pointer-events-auto max-w-lg w-full rounded-2xl bg-[#12151E] border border-white/15 p-6 text-center shadow-2xl">
-            <AlertCircle className="w-10 h-10 text-amber-400 mx-auto mb-3" />
+          <div className="pointer-events-auto max-w-lg w-full rounded-lg bg-[#16181F] border border-white/15 p-6 text-center shadow-2xl">
+            <AlertCircle className="w-10 h-10 text-[#FFB800] mx-auto mb-3" />
             <h3 className="font-display text-xl font-semibold text-white">
               Falha na reprodução
             </h3>
@@ -1284,7 +1284,7 @@ export function VideoPlayerModal({
                     cyclePlaybackMode();
                   }
                 }}
-                className="px-5 py-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-semibold text-sm whitespace-nowrap shrink-0"
+                className="px-5 py-2.5 rounded-lg bg-[#FFB800] hover:bg-[#FFC933] text-[#0B0C10] font-semibold text-sm whitespace-nowrap shrink-0"
               >
                 {!effectiveUrl && item.streamType === 'page'
                   ? 'Tentar Extrair Novamente'
@@ -1373,11 +1373,11 @@ export function VideoPlayerModal({
               }}
               className={`h-9 px-3.5 rounded-full backdrop-blur-md border flex items-center gap-1.5 text-xs font-semibold whitespace-nowrap shrink-0 shadow-lg transition-colors ${
                 showControls
-                  ? 'bg-sky-500/90 hover:bg-sky-400 text-slate-950 border-sky-300/60'
-                  : 'bg-[#090A0F]/65 hover:bg-[#090A0F]/90 border-white/25 text-white'
+                  ? 'bg-[#FFB800] hover:bg-[#FFC933] text-[#0B0C10] border-[#FFB800]'
+                  : 'bg-[#0B0C10]/70 hover:bg-[#0B0C10]/90 border-white/25 text-white'
               }`}
             >
-              <Settings2 className={`w-3.5 h-3.5 ${showControls ? 'text-slate-950' : 'text-sky-400'}`} />
+              <Settings2 className={`w-3.5 h-3.5 ${showControls ? 'text-[#0B0C10]' : 'text-[#FFB800]'}`} />
               Controles TV
             </button>
           </div>
@@ -1509,7 +1509,7 @@ export function VideoPlayerModal({
                   setIframeReloadNonce((n) => n + 1);
                   wakeControls();
                 }}
-                className="h-12 px-4 rounded-xl bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/40 text-xs font-medium text-sky-200 whitespace-nowrap shrink-0"
+                className="h-12 px-4 rounded-lg bg-[#FFB800]/20 hover:bg-[#FFB800]/30 border border-[#FFB800]/45 text-xs font-medium text-[#FFD25A] whitespace-nowrap shrink-0"
               >
                 {iframeTargetMode === 'embed' ? 'Ver Página Completa' : 'Ver Player Embed'}
               </button>
@@ -1598,10 +1598,10 @@ export function VideoPlayerModal({
                   setCurrentTime(videoRef.current.currentTime);
                 }
               }}
-              className="h-3 w-full rounded-full bg-white/20 overflow-hidden cursor-pointer focus:ring-2 focus:ring-sky-400"
+              className="h-3 w-full rounded-full bg-white/20 overflow-hidden cursor-pointer focus:ring-2 focus:ring-[#FFB800]"
             >
               <div
-                className="h-full bg-sky-400 rounded-full transition-all duration-100"
+                className="h-full bg-[#FFB800] rounded-full transition-all duration-100"
                 style={{ width: `${progressPct}%` }}
               />
             </div>
@@ -1614,7 +1614,7 @@ export function VideoPlayerModal({
                 data-tv-focusable="true"
                 disabled={!prevItem}
                 onClick={() => prevItem && onSelectItem(prevItem)}
-                className="h-12 px-4 rounded-xl bg-white/10 hover:bg-white/20 disabled:opacity-35 text-white flex items-center gap-2 text-sm font-medium whitespace-nowrap shrink-0"
+                className="h-12 px-4 rounded-lg bg-white/10 hover:bg-white/20 disabled:opacity-35 text-white flex items-center gap-2 text-sm font-medium whitespace-nowrap shrink-0"
               >
                 <SkipBack className="w-4 h-4" />
                 Anterior
@@ -1624,7 +1624,7 @@ export function VideoPlayerModal({
                 type="button"
                 data-tv-focusable="true"
                 onClick={() => seekBy(-15)}
-                className="h-12 px-4 rounded-xl bg-white/10 hover:bg-white/20 text-white flex items-center gap-1.5 text-sm font-mono tabular-nums whitespace-nowrap shrink-0"
+                className="h-12 px-4 rounded-lg bg-white/10 hover:bg-white/20 text-white flex items-center gap-1.5 text-sm font-mono tabular-nums whitespace-nowrap shrink-0"
               >
                 <RotateCcw className="w-4 h-4" />
                 -15s
@@ -1635,7 +1635,7 @@ export function VideoPlayerModal({
                 type="button"
                 data-tv-focusable="true"
                 onClick={togglePlay}
-                className="h-12 px-6 rounded-xl bg-white text-[#090A0F] hover:bg-slate-200 flex items-center gap-2 text-sm font-bold whitespace-nowrap shrink-0"
+                className="h-12 px-6 rounded-lg bg-[#FFB800] text-[#0B0C10] hover:bg-[#FFC933] flex items-center gap-2 text-sm font-bold whitespace-nowrap shrink-0"
               >
                 {isPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current" />}
                 {isPlaying ? 'Pausar' : 'Reproduzir'}
@@ -1686,9 +1686,9 @@ export function VideoPlayerModal({
                               type="button"
                               data-tv-focusable="true"
                               onClick={() => selectQuality(idx)}
-                              className={`w-full h-10 px-3 rounded-xl flex items-center justify-between text-xs font-mono transition-colors ${
+                              className={`w-full h-10 px-3 rounded-lg flex items-center justify-between text-xs font-mono transition-colors ${
                                 isCurrent
-                                  ? 'bg-sky-500 text-slate-950 font-bold'
+                                  ? 'bg-[#FFB800] text-[#0B0C10] font-bold'
                                   : 'bg-white/5 hover:bg-white/15 text-slate-200'
                               }`}
                             >
@@ -1696,7 +1696,7 @@ export function VideoPlayerModal({
                               <span className="flex items-center gap-1.5 shrink-0">
                                 <span
                                   className={`text-[10px] uppercase ${
-                                    isCurrent ? 'text-slate-900' : 'text-slate-400'
+                                    isCurrent ? 'text-[#0B0C10]' : 'text-slate-400'
                                   }`}
                                 >
                                   {q.streamType}
@@ -1720,10 +1720,10 @@ export function VideoPlayerModal({
                         wakeControls();
                       }
                     }}
-                    className={`h-12 px-4 rounded-xl border text-xs font-mono font-medium flex items-center gap-2 whitespace-nowrap shrink-0 transition-colors ${
+                    className={`h-12 px-4 rounded-lg border text-xs font-mono font-medium flex items-center gap-2 whitespace-nowrap shrink-0 transition-colors ${
                       showQualityMenu
-                        ? 'bg-sky-500 text-slate-950 border-sky-400 font-bold'
-                        : 'bg-sky-500/20 hover:bg-sky-500/30 border-sky-400/40 text-sky-200'
+                        ? 'bg-[#FFB800] text-[#0B0C10] border-[#FFB800] font-bold'
+                        : 'bg-[#FFB800]/18 hover:bg-[#FFB800]/28 border-[#FFB800]/45 text-[#FFD25A]'
                     }`}
                   >
                     <Settings2 className="w-4 h-4" />
@@ -1743,7 +1743,7 @@ export function VideoPlayerModal({
                 type="button"
                 data-tv-focusable="true"
                 onClick={cyclePlaybackMode}
-                className="h-12 px-4 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-medium text-slate-100 whitespace-nowrap shrink-0"
+                className="h-12 px-4 rounded-lg bg-white/10 hover:bg-white/20 text-xs font-medium text-slate-100 whitespace-nowrap shrink-0"
                 title="Alternar entre reprodução Direta, Proxy ou Embed"
               >
                 Alternar Modo (Direto / Proxy / Embed) ·{' '}
@@ -1755,9 +1755,9 @@ export function VideoPlayerModal({
                   type="button"
                   data-tv-focusable="true"
                   onClick={() => setSubtitlesEnabled((s) => !s)}
-                  className={`h-12 px-4 rounded-xl flex items-center gap-2 text-sm font-medium whitespace-nowrap shrink-0 ${
+                  className={`h-12 px-4 rounded-lg flex items-center gap-2 text-sm font-medium whitespace-nowrap shrink-0 ${
                     subtitlesEnabled
-                      ? 'bg-sky-500/25 text-sky-300 border border-sky-400/40'
+                      ? 'bg-[#FFB800]/20 text-[#FFB800] border border-[#FFB800]/45'
                       : 'bg-white/10 text-slate-300'
                   }`}
                 >
@@ -1810,7 +1810,7 @@ export function VideoPlayerModal({
 
       {/* Side Episode / Playlist Drawer */}
       {showQueue && (
-        <aside className="absolute top-0 right-0 bottom-0 z-40 w-96 max-w-full bg-[#0E1119]/98 border-l border-white/10 flex flex-col">
+        <aside className="absolute top-0 right-0 bottom-0 z-40 w-96 max-w-full bg-[#16181F]/98 border-l border-white/10 flex flex-col">
           <div className="px-5 py-4 border-b border-white/10 flex items-center justify-between">
             <h3 className="font-display font-semibold text-base text-white">
               Lista do Servidor ({playlist.length})
@@ -1834,10 +1834,10 @@ export function VideoPlayerModal({
                   type="button"
                   data-tv-focusable="true"
                   onClick={() => onSelectItem(entry)}
-                  className={`w-full text-left px-3.5 py-3 rounded-xl border transition-colors ${
+                  className={`w-full text-left px-3.5 py-3 rounded-lg border-2 transition-colors ${
                     active
-                      ? 'bg-sky-500/20 border-sky-400/50 text-white'
-                      : 'bg-[#141824] border-white/8 text-slate-300 hover:bg-[#1A2030]'
+                      ? 'bg-[#FFB800]/15 border-[#FFB800] text-white'
+                      : 'bg-[#0B0C10] border-white/8 text-slate-300 hover:border-white/25'
                   }`}
                 >
                   <div className="flex items-center gap-3">

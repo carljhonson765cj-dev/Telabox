@@ -34,7 +34,7 @@ export function OnScreenKeyboard({
   const backspace = () => onChange(value.slice(0, -1));
 
   return (
-    <div className="mt-4 p-4 rounded-2xl bg-[#12151E] border border-white/10">
+    <div className="mt-4 p-4 rounded-lg bg-[#16181F] border border-white/10">
       <div className="flex flex-wrap items-center gap-2 mb-3">
         {QUICK_TOKENS.map((tok) => (
           <button
@@ -42,7 +42,7 @@ export function OnScreenKeyboard({
             type="button"
             data-tv-focusable="true"
             onClick={() => append(tok)}
-            className="px-3 py-1.5 rounded-lg bg-[#1A1F2E] hover:bg-[#232A3E] text-xs font-mono text-sky-300 border border-white/10 whitespace-nowrap shrink-0"
+            className="px-3 py-1.5 rounded-lg bg-[#0B0C10] hover:bg-[#1E212B] text-xs font-mono text-[#FFB800] border border-white/10 whitespace-nowrap shrink-0"
           >
             {tok}
           </button>
@@ -58,7 +58,7 @@ export function OnScreenKeyboard({
                 type="button"
                 data-tv-focusable="true"
                 onClick={() => append(key)}
-                className="min-w-[44px] h-11 px-3 rounded-lg bg-[#181C28] hover:bg-[#252B3D] text-sm font-mono font-medium text-slate-100 border border-white/10 flex items-center justify-center"
+                className="min-w-[44px] h-11 px-3 rounded-lg bg-[#0B0C10] hover:bg-[#1E212B] text-sm font-mono font-medium text-slate-100 border border-white/10 flex items-center justify-center"
               >
                 {key}
               </button>
@@ -71,7 +71,7 @@ export function OnScreenKeyboard({
             type="button"
             data-tv-focusable="true"
             onClick={() => append(' ')}
-            className="h-11 px-5 rounded-lg bg-[#181C28] hover:bg-[#252B3D] text-sm text-slate-200 border border-white/10 flex items-center gap-2 whitespace-nowrap shrink-0"
+            className="h-11 px-5 rounded-lg bg-[#0B0C10] hover:bg-[#1E212B] text-sm text-slate-200 border border-white/10 flex items-center gap-2 whitespace-nowrap shrink-0"
           >
             <Space className="w-4 h-4" />
             Espaço
@@ -80,7 +80,7 @@ export function OnScreenKeyboard({
             type="button"
             data-tv-focusable="true"
             onClick={backspace}
-            className="h-11 px-5 rounded-lg bg-[#181C28] hover:bg-[#252B3D] text-sm text-slate-200 border border-white/10 flex items-center gap-2 whitespace-nowrap shrink-0"
+            className="h-11 px-5 rounded-lg bg-[#0B0C10] hover:bg-[#1E212B] text-sm text-slate-200 border border-white/10 flex items-center gap-2 whitespace-nowrap shrink-0"
           >
             <Delete className="w-4 h-4" />
             Apagar
@@ -89,7 +89,7 @@ export function OnScreenKeyboard({
             type="button"
             data-tv-focusable="true"
             onClick={() => onChange('')}
-            className="h-11 px-4 rounded-lg bg-[#181C28] hover:bg-[#252B3D] text-sm text-slate-300 border border-white/10 whitespace-nowrap shrink-0"
+            className="h-11 px-4 rounded-lg bg-[#0B0C10] hover:bg-[#1E212B] text-sm text-slate-300 border border-white/10 whitespace-nowrap shrink-0"
           >
             Limpar
           </button>
@@ -97,7 +97,7 @@ export function OnScreenKeyboard({
             type="button"
             data-tv-focusable="true"
             onClick={onClose}
-            className="h-11 px-4 rounded-lg bg-[#181C28] hover:bg-[#252B3D] text-sm text-slate-300 border border-white/10 whitespace-nowrap shrink-0"
+            className="h-11 px-4 rounded-lg bg-[#0B0C10] hover:bg-[#1E212B] text-sm text-slate-300 border border-white/10 whitespace-nowrap shrink-0"
           >
             Ocultar Teclado
           </button>
@@ -105,7 +105,7 @@ export function OnScreenKeyboard({
             type="button"
             data-tv-focusable="true"
             onClick={onSubmit}
-            className="ml-auto h-11 px-6 rounded-lg bg-sky-500 hover:bg-sky-400 text-sm font-semibold text-slate-950 flex items-center gap-2 whitespace-nowrap shrink-0"
+            className="ml-auto h-11 px-6 rounded-lg bg-[#FFB800] hover:bg-[#FFC933] text-sm font-semibold text-[#0B0C10] flex items-center gap-2 whitespace-nowrap shrink-0"
           >
             <CornerDownLeft className="w-4 h-4" />
             Confirmar

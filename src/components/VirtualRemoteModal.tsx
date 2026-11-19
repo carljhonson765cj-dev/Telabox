@@ -27,7 +27,7 @@ export function VirtualRemoteModal({
   return (
     <div
       data-tv-ignore-spatial="true"
-      className="fixed bottom-12 right-6 z-40 w-64 rounded-2xl bg-[#12151E] border border-white/15 p-4 shadow-2xl"
+      className="fixed bottom-20 md:bottom-12 right-4 md:right-6 z-40 w-64 rounded-lg bg-[#16181F] border border-white/15 p-4 shadow-2xl"
     >
       <div className="flex items-center justify-between mb-3">
         <span className="font-display text-sm font-semibold text-white">
@@ -49,7 +49,7 @@ export function VirtualRemoteModal({
         <button
           type="button"
           onClick={() => onMove('up')}
-          className="h-12 rounded-xl bg-[#1B2030] hover:bg-[#262D42] active:scale-95 border border-white/10 flex items-center justify-center text-white"
+          className="h-12 rounded-lg bg-[#1E212B] hover:bg-[#272B38] active:scale-95 border border-white/10 flex items-center justify-center text-white"
           aria-label="Cima"
         >
           <ChevronUp className="w-5 h-5" />
@@ -59,7 +59,7 @@ export function VirtualRemoteModal({
         <button
           type="button"
           onClick={() => onMove('left')}
-          className="h-12 rounded-xl bg-[#1B2030] hover:bg-[#262D42] active:scale-95 border border-white/10 flex items-center justify-center text-white"
+          className="h-12 rounded-lg bg-[#1E212B] hover:bg-[#272B38] active:scale-95 border border-white/10 flex items-center justify-center text-white"
           aria-label="Esquerda"
         >
           <ChevronLeft className="w-5 h-5" />
@@ -67,14 +67,14 @@ export function VirtualRemoteModal({
         <button
           type="button"
           onClick={onOk}
-          className="h-12 rounded-xl bg-sky-500 hover:bg-sky-400 active:scale-95 text-slate-950 font-display font-bold text-sm flex items-center justify-center"
+          className="h-12 rounded-lg bg-[#FFB800] hover:bg-[#FFC933] active:scale-95 text-[#0B0C10] font-display font-bold text-sm flex items-center justify-center"
         >
           OK
         </button>
         <button
           type="button"
           onClick={() => onMove('right')}
-          className="h-12 rounded-xl bg-[#1B2030] hover:bg-[#262D42] active:scale-95 border border-white/10 flex items-center justify-center text-white"
+          className="h-12 rounded-lg bg-[#1E212B] hover:bg-[#272B38] active:scale-95 border border-white/10 flex items-center justify-center text-white"
           aria-label="Direita"
         >
           <ChevronRight className="w-5 h-5" />
@@ -84,7 +84,7 @@ export function VirtualRemoteModal({
         <button
           type="button"
           onClick={() => onMove('down')}
-          className="h-12 rounded-xl bg-[#1B2030] hover:bg-[#262D42] active:scale-95 border border-white/10 flex items-center justify-center text-white"
+          className="h-12 rounded-lg bg-[#1E212B] hover:bg-[#272B38] active:scale-95 border border-white/10 flex items-center justify-center text-white"
           aria-label="Baixo"
         >
           <ChevronDown className="w-5 h-5" />
@@ -96,7 +96,7 @@ export function VirtualRemoteModal({
         <button
           type="button"
           onClick={onBack}
-          className="h-10 rounded-xl bg-[#1A1F2E] hover:bg-[#242B3E] text-xs font-medium text-slate-200 flex items-center justify-center gap-1.5"
+          className="h-10 rounded-lg bg-[#1E212B] hover:bg-[#272B38] text-xs font-medium text-slate-200 flex items-center justify-center gap-1.5"
         >
           <CornerUpLeft className="w-3.5 h-3.5" />
           Voltar
@@ -104,7 +104,7 @@ export function VirtualRemoteModal({
         <button
           type="button"
           onClick={onHome}
-          className="h-10 rounded-xl bg-[#1A1F2E] hover:bg-[#242B3E] text-xs font-medium text-slate-200 flex items-center justify-center gap-1.5"
+          className="h-10 rounded-lg bg-[#1E212B] hover:bg-[#272B38] text-xs font-medium text-slate-200 flex items-center justify-center gap-1.5"
         >
           <Home className="w-3.5 h-3.5" />
           Início

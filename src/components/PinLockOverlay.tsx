@@ -201,12 +201,12 @@ export function PinLockOverlay({
   return (
     <div
       data-tv-scope="modal"
-      className="fixed inset-0 z-[70] bg-[#090A0F]/98 backdrop-blur-md flex items-center justify-center p-4 sm:p-6 overflow-y-auto"
+      className="fixed inset-0 z-[70] bg-[#0B0C10]/98 backdrop-blur-md flex items-center justify-center p-4 sm:p-6 overflow-y-auto"
     >
-      <div className="w-full max-w-md rounded-2xl bg-[#12151E] border border-white/12 p-6 sm:p-8 shadow-2xl">
+      <div className="w-full max-w-md rounded-lg bg-[#16181F] border border-white/12 p-6 sm:p-8 shadow-2xl">
         <div className="flex items-start justify-between gap-4">
           <div className="flex items-center gap-3.5">
-            <div className="w-11 h-11 rounded-xl bg-sky-500/15 border border-sky-400/35 text-sky-300 flex items-center justify-center shrink-0">
+            <div className="w-11 h-11 rounded-lg bg-[#FFB800]/15 border border-[#FFB800]/35 text-[#FFB800] flex items-center justify-center shrink-0">
               {mode === 'unlock' ? (
                 <Lock className="w-5 h-5" />
               ) : (
@@ -228,7 +228,7 @@ export function PinLockOverlay({
               type="button"
               data-tv-focusable="true"
               onClick={onCancel}
-              className="w-10 h-10 rounded-xl bg-white/8 hover:bg-white/15 text-slate-300 hover:text-white flex items-center justify-center shrink-0"
+              className="w-10 h-10 rounded-lg bg-white/8 hover:bg-white/15 text-slate-300 hover:text-white flex items-center justify-center shrink-0"
               aria-label="Cancelar"
             >
               <X className="w-5 h-5" />
@@ -244,19 +244,19 @@ export function PinLockOverlay({
             return (
               <div
                 key={slot}
-                className={`w-14 h-14 rounded-xl border flex items-center justify-center transition-colors ${
+                className={`w-14 h-14 rounded-lg border-2 flex items-center justify-center transition-colors ${
                   errorMsg
                     ? 'bg-rose-500/10 border-rose-400/60'
                     : filled
-                    ? 'bg-sky-500/15 border-sky-400/60'
+                    ? 'bg-[#FFB800]/15 border-[#FFB800]'
                     : activeSlot
-                    ? 'bg-[#090A0F] border-white/40'
-                    : 'bg-[#090A0F] border-white/12'
+                    ? 'bg-[#0B0C10] border-[#FFB800]/50'
+                    : 'bg-[#0B0C10] border-white/12'
                 }`}
               >
                 <span
                   className={`w-3.5 h-3.5 rounded-full transition-transform ${
-                    filled ? 'bg-white scale-100' : 'bg-white/15 scale-75'
+                    filled ? 'bg-[#FFB800] scale-100' : 'bg-white/15 scale-75'
                   }`}
                 />
               </div>
@@ -284,7 +284,7 @@ export function PinLockOverlay({
               data-tv-focusable="true"
               disabled={busy}
               onClick={() => appendDigit(num)}
-              className="h-14 rounded-xl bg-[#191E2B] hover:bg-[#232A3C] border border-white/10 text-xl font-display font-bold text-white flex items-center justify-center transition-colors"
+              className="h-14 rounded-lg bg-[#1E212B] hover:bg-[#272B38] border-2 border-white/10 text-xl font-display font-bold text-white flex items-center justify-center transition-colors"
             >
               {num}
             </button>
@@ -295,7 +295,7 @@ export function PinLockOverlay({
             data-tv-focusable="true"
             disabled={busy || digits.length === 0}
             onClick={handleClear}
-            className="h-14 rounded-xl bg-[#131722] hover:bg-[#1E2434] disabled:opacity-40 border border-white/10 text-xs font-semibold text-slate-300 flex items-center justify-center gap-1.5"
+            className="h-14 rounded-lg bg-[#12141B] hover:bg-[#1E212B] disabled:opacity-40 border-2 border-white/10 text-xs font-semibold text-slate-300 flex items-center justify-center gap-1.5"
           >
             <RotateCcw className="w-4 h-4" />
             Limpar
@@ -306,7 +306,7 @@ export function PinLockOverlay({
             data-tv-focusable="true"
             disabled={busy}
             onClick={() => appendDigit('0')}
-            className="h-14 rounded-xl bg-[#191E2B] hover:bg-[#232A3C] border border-white/10 text-xl font-display font-bold text-white flex items-center justify-center transition-colors"
+            className="h-14 rounded-lg bg-[#1E212B] hover:bg-[#272B38] border-2 border-white/10 text-xl font-display font-bold text-white flex items-center justify-center transition-colors"
           >
             0
           </button>
@@ -316,7 +316,7 @@ export function PinLockOverlay({
             data-tv-focusable="true"
             disabled={busy || digits.length === 0}
             onClick={handleBackspace}
-            className="h-14 rounded-xl bg-[#131722] hover:bg-[#1E2434] disabled:opacity-40 border border-white/10 text-xs font-semibold text-slate-300 flex items-center justify-center gap-1.5"
+            className="h-14 rounded-lg bg-[#12141B] hover:bg-[#1E212B] disabled:opacity-40 border-2 border-white/10 text-xs font-semibold text-slate-300 flex items-center justify-center gap-1.5"
             aria-label="Apagar último dígito"
           >
             <Delete className="w-4 h-4" />

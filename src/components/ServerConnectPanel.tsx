@@ -274,8 +274,8 @@ export function ServerConnectPanel({
   return (
     <div className="space-y-8">
       {/* Main Server Connection Card */}
-      <section className="relative rounded-2xl overflow-hidden bg-[#12151E] border border-white/10">
-        <div className="relative p-7 lg:p-9">
+      <section className="relative rounded-lg overflow-hidden bg-[#16181F] border border-white/10">
+        <div className="relative p-6 sm:p-8">
           <div className="max-w-3xl">
             <h1 className="font-display text-2xl sm:text-3xl font-bold text-white tracking-tight text-balance">
               Conectar Site ou Servidor de Vídeos
@@ -295,7 +295,7 @@ export function ServerConnectPanel({
                   value={url}
                   onChange={(e) => setUrl(e.target.value)}
                   placeholder="https://exemplo.com/videos/ ou /demo-server"
-                  className="w-full h-13 pl-12 pr-4 rounded-xl bg-[#090A0F] border border-white/15 text-base font-mono text-white placeholder:text-slate-500 focus:border-white"
+                  className="w-full h-13 pl-12 pr-4 rounded-lg bg-[#0B0C10] border-2 border-white/12 text-base font-mono text-white placeholder:text-slate-500 focus:border-[#FFB800]"
                 />
               </div>
 
@@ -303,9 +303,9 @@ export function ServerConnectPanel({
                 type="button"
                 data-tv-focusable="true"
                 onClick={() => setShowKeyboard((k) => !k)}
-                className="h-13 px-4 rounded-xl bg-[#1A1F2E] hover:bg-[#232A3E] text-slate-200 border border-white/10 flex items-center justify-center gap-2 text-sm font-medium whitespace-nowrap shrink-0"
+                className="h-13 px-4 rounded-lg bg-[#1E212B] hover:bg-[#262A36] text-slate-200 border-2 border-white/10 hover:border-[#FFB800] focus:border-[#FFB800] flex items-center justify-center gap-2 text-sm font-medium whitespace-nowrap shrink-0"
               >
-                <Keyboard className="w-4 h-4" />
+                <Keyboard className="w-4 h-4 text-[#FFB800]" />
                 Teclado TV
               </button>
 
@@ -314,7 +314,7 @@ export function ServerConnectPanel({
                   type="submit"
                   data-tv-focusable="true"
                   disabled={!url.trim()}
-                  className="h-13 px-7 rounded-xl bg-sky-500 hover:bg-sky-400 disabled:opacity-45 text-slate-950 font-display font-bold text-base flex items-center justify-center gap-2 whitespace-nowrap shrink-0"
+                  className="h-13 px-7 rounded-lg bg-[#FFB800] hover:bg-[#FFC933] disabled:opacity-45 text-[#0B0C10] font-display font-bold text-base flex items-center justify-center gap-2 whitespace-nowrap shrink-0 hover:scale-105 focus:scale-105"
                 >
                   <FolderSearch className="w-5 h-5" />
                   Carregar Servidor
@@ -324,7 +324,7 @@ export function ServerConnectPanel({
                   type="button"
                   data-tv-focusable="true"
                   onClick={onStopScan}
-                  className="h-13 px-7 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-display font-bold text-base flex items-center justify-center gap-2 whitespace-nowrap shrink-0"
+                  className="h-13 px-7 rounded-lg bg-[#FFB800] hover:bg-[#FFC933] text-[#0B0C10] font-display font-bold text-base flex items-center justify-center gap-2 whitespace-nowrap shrink-0"
                 >
                   <Square className="w-4 h-4 fill-current" />
                   Parar e Exibir
@@ -340,17 +340,17 @@ export function ServerConnectPanel({
                 value={customName}
                 onChange={(e) => setCustomName(e.target.value)}
                 placeholder="Nome do servidor (opcional)"
-                className="h-10 px-3.5 rounded-lg bg-[#090A0F] border border-white/10 text-sm text-white placeholder:text-slate-500 w-64"
+                className="h-10 px-3.5 rounded-lg bg-[#0B0C10] border-2 border-white/10 text-sm text-white placeholder:text-slate-500 w-64 focus:border-[#FFB800]"
               />
 
-              <div className="flex items-center gap-1 p-1 rounded-lg bg-[#090A0F] border border-white/10">
+              <div className="flex items-center gap-1 p-1 rounded-lg bg-[#0B0C10] border border-white/10">
                 <button
                   type="button"
                   data-tv-focusable="true"
                   onClick={() => setMode('full')}
                   className={`px-3.5 py-1.5 rounded-md text-xs font-medium whitespace-nowrap shrink-0 transition-colors ${
                     mode === 'full'
-                      ? 'bg-sky-500 text-slate-950 font-semibold'
+                      ? 'bg-[#FFB800] text-[#0B0C10] font-semibold'
                       : 'text-slate-300 hover:text-white'
                   }`}
                 >
@@ -362,7 +362,7 @@ export function ServerConnectPanel({
                   onClick={() => setMode('quick')}
                   className={`px-3.5 py-1.5 rounded-md text-xs font-medium whitespace-nowrap shrink-0 transition-colors ${
                     mode === 'quick'
-                      ? 'bg-sky-500 text-slate-950 font-semibold'
+                      ? 'bg-[#FFB800] text-[#0B0C10] font-semibold'
                       : 'text-slate-300 hover:text-white'
                   }`}
                 >
@@ -374,10 +374,10 @@ export function ServerConnectPanel({
                 type="button"
                 data-tv-focusable="true"
                 onClick={() => setUseProxy((p) => !p)}
-                className={`h-10 px-4 rounded-lg border text-xs font-medium whitespace-nowrap shrink-0 ${
+                className={`h-10 px-4 rounded-lg border-2 text-xs font-medium whitespace-nowrap shrink-0 ${
                   useProxy
-                    ? 'bg-emerald-500/15 border-emerald-400/40 text-emerald-300'
-                    : 'bg-[#090A0F] border-white/10 text-slate-300'
+                    ? 'bg-[#FFB800]/15 border-[#FFB800]/50 text-[#FFB800]'
+                    : 'bg-[#0B0C10] border-white/10 text-slate-300'
                 }`}
               >
                 {useProxy ? 'Reprodução via Proxy: Ativa' : 'Reprodução Direta'}
@@ -396,10 +396,10 @@ export function ServerConnectPanel({
 
           {/* Real-time Crawl Progress Panel */}
           {scanStatus.scanning && (
-            <div className="mt-6 p-5 rounded-xl bg-[#090A0F] border border-sky-400/30">
+            <div className="mt-6 p-5 rounded-lg bg-[#0B0C10] border border-[#FFB800]/40">
               <div className="flex flex-wrap items-center justify-between gap-4 mb-3">
                 <div className="flex items-center gap-3">
-                  <RefreshCw className="w-5 h-5 text-sky-400 animate-spin" />
+                  <RefreshCw className="w-5 h-5 text-[#FFB800] animate-spin" />
                   <span className="font-display font-semibold text-base text-white">
                     Mapeando servidor e organizando vídeos...
                   </span>
@@ -407,7 +407,7 @@ export function ServerConnectPanel({
                 <div className="text-sm font-mono tabular-nums text-slate-300">
                   {scanStatus.pagesScanned} / {scanStatus.maxPages} páginas ·{' '}
                   {scanStatus.foldersFound} pastas ·{' '}
-                  <span className="text-sky-400 font-semibold">
+                  <span className="text-[#FFB800] font-semibold">
                     {scanStatus.itemsFound} vídeos
                   </span>
                 </div>
@@ -415,7 +415,7 @@ export function ServerConnectPanel({
 
               <div className="h-2 w-full rounded-full bg-white/10 overflow-hidden">
                 <div
-                  className="h-full bg-sky-400 transition-all duration-200"
+                  className="h-full bg-[#FFB800] transition-all duration-200"
                   style={{ width: `${Math.max(8, progressPct)}%` }}
                 />
               </div>
@@ -429,11 +429,180 @@ export function ServerConnectPanel({
           )}
 
           {scanStatus.error && (
-            <div className="mt-5 p-4 rounded-xl bg-rose-500/15 border border-rose-500/40 text-sm text-rose-200">
+            <div className="mt-5 p-4 rounded-lg bg-rose-500/15 border border-rose-500/40 text-sm text-rose-200">
               {scanStatus.error}
             </div>
           )}
         </div>
+      </section>
+
+      {/* TV Box Privacy (PIN) & Backup Settings — Prominent for Backup/PIN tab */}
+      <section>
+        <h2 className="font-display text-lg font-semibold text-white mb-4">
+          Backup JSON e Bloqueio por PIN (TV Box)
+        </h2>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {/* 4-Digit PIN Lock Settings Card */}
+          <div className="p-5 sm:p-6 rounded-lg bg-[#16181F] border border-white/10 flex flex-col justify-between gap-5">
+            <div className="flex items-start gap-3.5">
+              <div
+                className={`w-11 h-11 rounded-lg flex items-center justify-center shrink-0 border ${
+                  pinEnabled
+                    ? 'bg-[#FFB800]/15 border-[#FFB800]/45 text-[#FFB800]'
+                    : 'bg-white/6 border-white/10 text-slate-300'
+                }`}
+              >
+                <Shield className="w-5 h-5" />
+              </div>
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="font-display font-semibold text-base text-white">
+                    Bloqueio por PIN (4 dígitos)
+                  </h3>
+                  <span
+                    className={`text-[11px] font-mono px-2 py-0.5 rounded ${
+                      pinEnabled
+                        ? 'bg-[#FFB800]/15 text-[#FFB800]'
+                        : 'bg-white/8 text-slate-400'
+                    }`}
+                  >
+                    {pinEnabled ? 'Ativo' : 'Desativado'}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs sm:text-sm text-slate-400 leading-relaxed">
+                  {pinEnabled
+                    ? 'O TelaBox solicita o PIN de 4 dígitos ao abrir. Navegável pelas setas do controle remoto (D-Pad) e por toque.'
+                    : 'Proteja a abertura do aplicativo com uma senha numérica de 4 dígitos fácil de digitar pelo controle remoto.'}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2.5">
+              {!pinEnabled ? (
+                <button
+                  type="button"
+                  data-tv-focusable="true"
+                  onClick={() => onConfigurePin('setup')}
+                  className="h-11 px-5 rounded-lg bg-[#FFB800] hover:bg-[#FFC933] text-[#0B0C10] font-semibold text-xs sm:text-sm flex items-center gap-2 whitespace-nowrap shrink-0 hover:scale-105 focus:scale-105"
+                >
+                  <Lock className="w-4 h-4" />
+                  Ativar PIN de 4 Dígitos
+                </button>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    data-tv-focusable="true"
+                    onClick={() => onConfigurePin('change')}
+                    className="h-11 px-4 rounded-lg bg-[#FFB800] hover:bg-[#FFC933] text-[#0B0C10] font-semibold text-xs sm:text-sm flex items-center gap-2 whitespace-nowrap shrink-0"
+                  >
+                    <Shield className="w-4 h-4" />
+                    Alterar PIN
+                  </button>
+                  <button
+                    type="button"
+                    data-tv-focusable="true"
+                    onClick={onLockNow}
+                    className="h-11 px-4 rounded-lg bg-white/10 hover:bg-white/20 text-white font-medium text-xs sm:text-sm flex items-center gap-2 whitespace-nowrap shrink-0"
+                  >
+                    <Lock className="w-4 h-4 text-[#FFB800]" />
+                    Bloquear Agora
+                  </button>
+                  <button
+                    type="button"
+                    data-tv-focusable="true"
+                    onClick={() => onConfigurePin('disable')}
+                    className="h-11 px-4 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 border border-rose-400/35 text-rose-200 font-medium text-xs sm:text-sm flex items-center gap-2 whitespace-nowrap shrink-0"
+                  >
+                    <Unlock className="w-4 h-4" />
+                    Desativar PIN
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* Export / Import Backup Card */}
+          <div className="p-5 sm:p-6 rounded-lg bg-[#16181F] border border-white/10 flex flex-col justify-between gap-5">
+            <div className="flex items-start gap-3.5">
+              <div className="w-11 h-11 rounded-lg bg-[#FFB800]/15 border border-[#FFB800]/40 text-[#FFB800] flex items-center justify-center shrink-0">
+                <FileJson className="w-5 h-5" />
+              </div>
+              <div className="min-w-0">
+                <h3 className="font-display font-semibold text-base text-white">
+                  Backup de Servidores e Favoritos
+                </h3>
+                <p className="mt-1 text-xs sm:text-sm text-slate-400 leading-relaxed">
+                  Exporte ou importe seus servidores salvos e vídeos favoritos em arquivo JSON ou texto para transferir entre TV Box, celular e navegador.
+                </p>
+                <p className="mt-1.5 text-xs font-mono tabular-nums text-slate-300">
+                  {savedServers.length} {savedServers.length === 1 ? 'servidor' : 'servidores'} ·{' '}
+                  {favorites.length} {favorites.length === 1 ? 'favorito' : 'favoritos'}
+                </p>
+              </div>
+            </div>
+
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".json,application/json,text/plain"
+              onChange={handleBackupFileSelected}
+              className="hidden"
+            />
+
+            <div className="flex flex-wrap items-center gap-2.5">
+              <button
+                type="button"
+                data-tv-focusable="true"
+                onClick={handleDownloadBackupFile}
+                className="h-11 px-4 rounded-lg bg-[#FFB800] hover:bg-[#FFC933] text-[#0B0C10] font-semibold text-xs sm:text-sm flex items-center gap-2 whitespace-nowrap shrink-0 hover:scale-105 focus:scale-105"
+              >
+                <Download className="w-4 h-4" />
+                Exportar Backup (.json)
+              </button>
+              <button
+                type="button"
+                data-tv-focusable="true"
+                onClick={handleOpenExportText}
+                className="h-11 px-4 rounded-lg bg-white/10 hover:bg-white/20 text-white font-medium text-xs sm:text-sm flex items-center gap-2 whitespace-nowrap shrink-0"
+              >
+                <Copy className="w-4 h-4" />
+                Exportar em Texto
+              </button>
+              <button
+                type="button"
+                data-tv-focusable="true"
+                onClick={() => fileInputRef.current?.click()}
+                className="h-11 px-4 rounded-lg bg-white/10 hover:bg-white/20 text-white font-medium text-xs sm:text-sm flex items-center gap-2 whitespace-nowrap shrink-0"
+              >
+                <Upload className="w-4 h-4" />
+                Importar Arquivo
+              </button>
+              <button
+                type="button"
+                data-tv-focusable="true"
+                onClick={handleOpenImportText}
+                className="h-11 px-4 rounded-lg bg-white/10 hover:bg-white/20 text-white font-medium text-xs sm:text-sm flex items-center gap-2 whitespace-nowrap shrink-0"
+              >
+                <ClipboardPaste className="w-4 h-4" />
+                Importar Texto JSON
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {backupFeedback && !backupModalMode && (
+          <div
+            className={`mt-4 p-4 rounded-lg border text-sm ${
+              backupFeedback.type === 'success'
+                ? 'bg-emerald-500/15 border-emerald-400/40 text-emerald-200'
+                : 'bg-rose-500/15 border-rose-500/40 text-rose-200'
+            }`}
+          >
+            {backupFeedback.message}
+          </div>
+        )}
       </section>
 
       {/* Instant Connect Servers */}
@@ -460,9 +629,9 @@ export function ServerConnectPanel({
                   useProxy: true,
                 });
               }}
-              className="group relative flex items-center gap-4 p-4 rounded-xl bg-[#12151E] border border-white/8 hover:border-white/25 text-left overflow-hidden"
+              className="group relative flex items-center gap-4 p-4 rounded-lg bg-[#16181F] border-2 border-white/8 hover:border-[#FFB800] focus:border-[#FFB800] hover:scale-[1.02] focus:scale-[1.02] text-left overflow-hidden transition-transform duration-150"
             >
-              <div className="w-24 h-16 rounded-lg overflow-hidden bg-[#090A0F] shrink-0">
+              <div className="w-24 h-16 rounded-md overflow-hidden bg-[#0B0C10] shrink-0">
                 <img
                   src={demo.image}
                   alt={demo.label}
@@ -470,17 +639,17 @@ export function ServerConnectPanel({
                 />
               </div>
               <div className="min-w-0 flex-1">
-                <h3 className="font-display font-semibold text-base text-white truncate">
+                <h3 className="font-display font-semibold text-base text-white truncate group-hover:text-[#FFB800] group-focus:text-[#FFB800]">
                   {demo.label}
                 </h3>
                 <p className="mt-0.5 text-xs text-slate-400 line-clamp-1">
                   {demo.subtitle}
                 </p>
-                <p className="mt-1 text-xs font-mono text-sky-400 truncate">
+                <p className="mt-1 text-xs font-mono text-[#FFB800]/90 truncate">
                   {demo.url}
                 </p>
               </div>
-              <div className="w-10 h-10 rounded-xl bg-white/8 group-hover:bg-sky-500 group-focus:bg-sky-500 group-hover:text-slate-950 group-focus:text-slate-950 flex items-center justify-center text-white shrink-0 transition-colors">
+              <div className="w-10 h-10 rounded-lg bg-white/8 group-hover:bg-[#FFB800] group-focus:bg-[#FFB800] group-hover:text-[#0B0C10] group-focus:text-[#0B0C10] flex items-center justify-center text-white shrink-0 transition-colors">
                 <Play className="w-4 h-4 fill-current ml-0.5" />
               </div>
             </button>
@@ -501,14 +670,14 @@ export function ServerConnectPanel({
               return (
                 <div
                   key={srv.id}
-                  className={`p-4 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${
+                  className={`p-4 rounded-lg border-2 flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${
                     isActive
-                      ? 'bg-[#161B28] border-sky-400/50'
-                      : 'bg-[#12151E] border-white/8'
+                      ? 'bg-[#1A1D26] border-[#FFB800]/60'
+                      : 'bg-[#16181F] border-white/8'
                   }`}
                 >
                   <div className="flex items-start gap-3.5 min-w-0">
-                    <div className="w-11 h-11 rounded-xl bg-white/6 flex items-center justify-center text-sky-400 shrink-0">
+                    <div className="w-11 h-11 rounded-lg bg-[#FFB800]/12 flex items-center justify-center text-[#FFB800] shrink-0">
                       {srv.serverKind === 'iptv' ? (
                         <Tv className="w-5 h-5" />
                       ) : (
@@ -534,7 +703,7 @@ export function ServerConnectPanel({
                       type="button"
                       data-tv-focusable="true"
                       onClick={() => onSelectServer(srv.id)}
-                      className="h-10 px-4 rounded-lg bg-white text-[#090A0F] hover:bg-slate-200 font-semibold text-xs whitespace-nowrap shrink-0"
+                      className="h-10 px-4 rounded-lg bg-[#FFB800] text-[#0B0C10] hover:bg-[#FFC933] font-semibold text-xs whitespace-nowrap shrink-0"
                     >
                       Abrir Catálogo
                     </button>
@@ -565,182 +734,13 @@ export function ServerConnectPanel({
         </section>
       )}
 
-      {/* TV Box Privacy (PIN) & Backup Settings */}
-      <section className="pt-2">
-        <h2 className="font-display text-lg font-semibold text-white mb-4">
-          Configurações de Privacidade e Backup (TV Box)
-        </h2>
-
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {/* 4-Digit PIN Lock Settings Card */}
-          <div className="p-5 sm:p-6 rounded-2xl bg-[#12151E] border border-white/10 flex flex-col justify-between gap-5">
-            <div className="flex items-start gap-3.5">
-              <div
-                className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 border ${
-                  pinEnabled
-                    ? 'bg-emerald-500/15 border-emerald-400/35 text-emerald-300'
-                    : 'bg-white/6 border-white/10 text-slate-300'
-                }`}
-              >
-                <Shield className="w-5 h-5" />
-              </div>
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2">
-                  <h3 className="font-display font-semibold text-base text-white">
-                    Bloqueio por PIN (4 dígitos)
-                  </h3>
-                  <span
-                    className={`text-[11px] font-mono px-2 py-0.5 rounded-md ${
-                      pinEnabled
-                        ? 'bg-emerald-500/15 text-emerald-300'
-                        : 'bg-white/8 text-slate-400'
-                    }`}
-                  >
-                    {pinEnabled ? 'Ativo' : 'Desativado'}
-                  </span>
-                </div>
-                <p className="mt-1 text-xs sm:text-sm text-slate-400 leading-relaxed">
-                  {pinEnabled
-                    ? 'O TelaBox solicita o PIN de 4 dígitos ao abrir. Navegável pelas setas do controle remoto (D-Pad) e por toque.'
-                    : 'Proteja a abertura do aplicativo com uma senha numérica de 4 dígitos fácil de digitar pelo controle remoto.'}
-                </p>
-              </div>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2.5">
-              {!pinEnabled ? (
-                <button
-                  type="button"
-                  data-tv-focusable="true"
-                  onClick={() => onConfigurePin('setup')}
-                  className="h-11 px-5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-semibold text-xs sm:text-sm flex items-center gap-2 whitespace-nowrap shrink-0"
-                >
-                  <Lock className="w-4 h-4" />
-                  Ativar PIN de 4 Dígitos
-                </button>
-              ) : (
-                <>
-                  <button
-                    type="button"
-                    data-tv-focusable="true"
-                    onClick={() => onConfigurePin('change')}
-                    className="h-11 px-4 rounded-xl bg-white text-[#090A0F] hover:bg-slate-200 font-semibold text-xs sm:text-sm flex items-center gap-2 whitespace-nowrap shrink-0"
-                  >
-                    <Shield className="w-4 h-4" />
-                    Alterar PIN
-                  </button>
-                  <button
-                    type="button"
-                    data-tv-focusable="true"
-                    onClick={onLockNow}
-                    className="h-11 px-4 rounded-xl bg-white/10 hover:bg-white/20 text-white font-medium text-xs sm:text-sm flex items-center gap-2 whitespace-nowrap shrink-0"
-                  >
-                    <Lock className="w-4 h-4" />
-                    Bloquear Agora
-                  </button>
-                  <button
-                    type="button"
-                    data-tv-focusable="true"
-                    onClick={() => onConfigurePin('disable')}
-                    className="h-11 px-4 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-400/35 text-rose-200 font-medium text-xs sm:text-sm flex items-center gap-2 whitespace-nowrap shrink-0"
-                  >
-                    <Unlock className="w-4 h-4" />
-                    Desativar PIN
-                  </button>
-                </>
-              )}
-            </div>
-          </div>
-
-          {/* Export / Import Backup Card */}
-          <div className="p-5 sm:p-6 rounded-2xl bg-[#12151E] border border-white/10 flex flex-col justify-between gap-5">
-            <div className="flex items-start gap-3.5">
-              <div className="w-11 h-11 rounded-xl bg-sky-500/15 border border-sky-400/35 text-sky-300 flex items-center justify-center shrink-0">
-                <FileJson className="w-5 h-5" />
-              </div>
-              <div className="min-w-0">
-                <h3 className="font-display font-semibold text-base text-white">
-                  Backup de Servidores e Favoritos
-                </h3>
-                <p className="mt-1 text-xs sm:text-sm text-slate-400 leading-relaxed">
-                  Exporte ou importe seus servidores salvos e vídeos favoritos em arquivo JSON ou texto para transferir entre TV Box, celular e navegador.
-                </p>
-                <p className="mt-1.5 text-xs font-mono tabular-nums text-slate-300">
-                  {savedServers.length} {savedServers.length === 1 ? 'servidor' : 'servidores'} ·{' '}
-                  {favorites.length} {favorites.length === 1 ? 'favorito' : 'favoritos'}
-                </p>
-              </div>
-            </div>
-
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".json,application/json,text/plain"
-              onChange={handleBackupFileSelected}
-              className="hidden"
-            />
-
-            <div className="flex flex-wrap items-center gap-2.5">
-              <button
-                type="button"
-                data-tv-focusable="true"
-                onClick={handleDownloadBackupFile}
-                className="h-11 px-4 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-semibold text-xs sm:text-sm flex items-center gap-2 whitespace-nowrap shrink-0"
-              >
-                <Download className="w-4 h-4" />
-                Exportar Backup (.json)
-              </button>
-              <button
-                type="button"
-                data-tv-focusable="true"
-                onClick={handleOpenExportText}
-                className="h-11 px-4 rounded-xl bg-white/10 hover:bg-white/20 text-white font-medium text-xs sm:text-sm flex items-center gap-2 whitespace-nowrap shrink-0"
-              >
-                <Copy className="w-4 h-4" />
-                Exportar em Texto
-              </button>
-              <button
-                type="button"
-                data-tv-focusable="true"
-                onClick={() => fileInputRef.current?.click()}
-                className="h-11 px-4 rounded-xl bg-white/10 hover:bg-white/20 text-white font-medium text-xs sm:text-sm flex items-center gap-2 whitespace-nowrap shrink-0"
-              >
-                <Upload className="w-4 h-4" />
-                Importar Arquivo
-              </button>
-              <button
-                type="button"
-                data-tv-focusable="true"
-                onClick={handleOpenImportText}
-                className="h-11 px-4 rounded-xl bg-white/10 hover:bg-white/20 text-white font-medium text-xs sm:text-sm flex items-center gap-2 whitespace-nowrap shrink-0"
-              >
-                <ClipboardPaste className="w-4 h-4" />
-                Importar Texto JSON
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {backupFeedback && !backupModalMode && (
-          <div
-            className={`mt-4 p-4 rounded-xl border text-sm ${
-              backupFeedback.type === 'success'
-                ? 'bg-emerald-500/15 border-emerald-400/40 text-emerald-200'
-                : 'bg-rose-500/15 border-rose-500/40 text-rose-200'
-            }`}
-          >
-            {backupFeedback.message}
-          </div>
-        )}
-      </section>
-
       {/* Export / Import Backup Text Modal */}
       {backupModalMode && (
         <div
           data-tv-scope="modal"
           className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 sm:p-6"
         >
-          <div className="w-full max-w-2xl rounded-2xl bg-[#12151E] border border-white/15 p-6 shadow-2xl space-y-4">
+          <div className="w-full max-w-2xl rounded-lg bg-[#16181F] border border-white/15 p-6 shadow-2xl space-y-4">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h3 className="font-display text-xl font-bold text-white">
@@ -759,7 +759,7 @@ export function ServerConnectPanel({
                 type="button"
                 data-tv-focusable="true"
                 onClick={() => setBackupModalMode(null)}
-                className="w-10 h-10 rounded-xl bg-white/10 hover:bg-white/20 text-slate-200 flex items-center justify-center shrink-0"
+                className="w-10 h-10 rounded-lg bg-white/10 hover:bg-white/20 text-slate-200 flex items-center justify-center shrink-0"
                 aria-label="Fechar"
               >
                 <X className="w-5 h-5" />
@@ -778,12 +778,12 @@ export function ServerConnectPanel({
               readOnly={backupModalMode === 'export'}
               placeholder='{"app":"TelaBox","version":1,"servers":[...],"favorites":[...]}'
               rows={10}
-              className="w-full rounded-xl bg-[#090A0F] border border-white/15 p-4 text-xs font-mono text-slate-200 placeholder:text-slate-600 focus:border-sky-400"
+              className="w-full rounded-lg bg-[#0B0C10] border-2 border-white/15 p-4 text-xs font-mono text-slate-200 placeholder:text-slate-600 focus:border-[#FFB800]"
             />
 
             {backupFeedback && (
               <div
-                className={`p-3.5 rounded-xl border text-xs sm:text-sm ${
+                className={`p-3.5 rounded-lg border text-xs sm:text-sm ${
                   backupFeedback.type === 'success'
                     ? 'bg-emerald-500/15 border-emerald-400/40 text-emerald-200'
                     : 'bg-rose-500/15 border-rose-500/40 text-rose-200'
@@ -800,7 +800,7 @@ export function ServerConnectPanel({
                     type="button"
                     data-tv-focusable="true"
                     onClick={handleDownloadBackupFile}
-                    className="h-11 px-4 rounded-xl bg-white/10 hover:bg-white/20 text-white text-sm font-medium flex items-center gap-2 whitespace-nowrap shrink-0"
+                    className="h-11 px-4 rounded-lg bg-white/10 hover:bg-white/20 text-white text-sm font-medium flex items-center gap-2 whitespace-nowrap shrink-0"
                   >
                     <Download className="w-4 h-4" />
                     Baixar .json
@@ -809,7 +809,7 @@ export function ServerConnectPanel({
                     type="button"
                     data-tv-focusable="true"
                     onClick={() => void handleCopyBackupText()}
-                    className="h-11 px-5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 text-sm font-semibold flex items-center gap-2 whitespace-nowrap shrink-0"
+                    className="h-11 px-5 rounded-lg bg-[#FFB800] hover:bg-[#FFC933] text-[#0B0C10] text-sm font-semibold flex items-center gap-2 whitespace-nowrap shrink-0"
                   >
                     {copiedBackup ? (
                       <Check className="w-4 h-4" />
@@ -825,7 +825,7 @@ export function ServerConnectPanel({
                     type="button"
                     data-tv-focusable="true"
                     onClick={() => void handlePasteFromClipboard()}
-                    className="h-11 px-4 rounded-xl bg-white/10 hover:bg-white/20 text-white text-sm font-medium flex items-center gap-2 whitespace-nowrap shrink-0"
+                    className="h-11 px-4 rounded-lg bg-white/10 hover:bg-white/20 text-white text-sm font-medium flex items-center gap-2 whitespace-nowrap shrink-0"
                   >
                     <ClipboardPaste className="w-4 h-4" />
                     Colar Texto
@@ -835,7 +835,7 @@ export function ServerConnectPanel({
                     data-tv-focusable="true"
                     disabled={!backupText.trim()}
                     onClick={() => applyImportedText(backupText, true)}
-                    className="h-11 px-5 rounded-xl bg-sky-500 hover:bg-sky-400 disabled:opacity-45 text-slate-950 text-sm font-semibold flex items-center gap-2 whitespace-nowrap shrink-0"
+                    className="h-11 px-5 rounded-lg bg-[#FFB800] hover:bg-[#FFC933] disabled:opacity-45 text-[#0B0C10] text-sm font-semibold flex items-center gap-2 whitespace-nowrap shrink-0"
                   >
                     <Upload className="w-4 h-4" />
                     Importar Backup
