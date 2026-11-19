@@ -1,22 +1,50 @@
-export async function fetchJson<T>(input: RequestInfo | URL, init?: RequestInit): Promise<{ ok: boolean; status: number; data: T }> {
-  const res = await fetch(input, init);
-  const rawText = await res.text();
-  const trimmed = rawText.trimStart();
-
-  if (!trimmed) {
-    throw new Error(`Resposta vazia do servidor (HTTP ${res.status}).`);
+export async function fetchJson<T>(
+  input: RequestInfo | URL,
+  init?: RequestInit
+): Promise<{ ok: boolean; status: number; data: T }> {
+  const headers = new Headers(init?.headers);
+  if (!headers.has('Accept')) {
+    headers.set('Accept', 'application/json');
   }
 
-  if (trimmed.startsWith('<')) {
-    throw new Error(
-      `O servidor retornou uma página HTML inesperada em vez de dados JSON (HTTP ${res.status}).`
-    );
+  const resposta = await fetch(input, {
+    ...init,
+    headers,
+  });
+
+  // 1. Verifica o cabeçalho Content-Type antes de tentar converter para JSON
+  const tipoConteudo = (resposta.headers.get('content-type') || '').toLowerCase();
+  if (!tipoConteudo.includes('application/json')) {
+    const textoRecebido = await resposta.text();
+    console.warn('Resposta inesperada (não é JSON):', textoRecebido.slice(0, 150));
+    if (!resposta.ok) {
+      throw new Error(`Erro HTTP: ${resposta.status}`);
+    }
+    throw new Error('O servidor retornou HTML/Texto em vez de JSON.');
   }
 
+  // 2. Converte os dados JSON com segurança
+  let data: T;
   try {
-    const data = JSON.parse(rawText) as T;
-    return { ok: res.ok, status: res.status, data };
+    data = (await resposta.json()) as T;
   } catch {
-    throw new Error(`Resposta inválida do servidor (HTTP ${res.status}).`);
+    if (!resposta.ok) {
+      throw new Error(`Erro HTTP: ${resposta.status}`);
+    }
+    throw new Error(`Resposta JSON inválida do servidor (HTTP ${resposta.status}).`);
   }
+
+  // 3. Verifica se a resposta da rede foi bem-sucedida
+  if (!resposta.ok) {
+    const serverMsg =
+      typeof data === 'object' &&
+      data !== null &&
+      'error' in data &&
+      typeof (data as { error?: unknown }).error === 'string'
+        ? (data as { error: string }).error
+        : '';
+    throw new Error(serverMsg || `Erro HTTP: ${resposta.status}`);
+  }
+
+  return { ok: resposta.ok, status: resposta.status, data };
 }
